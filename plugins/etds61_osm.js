@@ -5,7 +5,7 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -30,6 +30,9 @@
 
     This script is the same as the standard "etds_osm" script but uses "tds61" instead of "tds"
 */
+if (typeof hoot === 'undefined') {
+    var hoot = require(process.env.HOOT_HOME + '/lib/HootJs');
+}
 
 // For the new fuzy rules
 hoot.require('SchemaTools')
@@ -55,7 +58,7 @@ etds61_osm = {
     // This function converts the "English" TDS to TDS and then to OSM+
     toOSM : function(attrs, elementType, geometryType)
     {
-        // Strip out the junk - this is also done in the toOsmPreProcessing but this 
+        // Strip out the junk - this is also done in the toOsmPreProcessing but this
         // means that there is less to convert later
         var ignoreList = { '-999999':1, '-999999.0':1, 'noinformation':1, 'No Information':1, 'noInformation':1 };
 
@@ -75,7 +78,7 @@ etds61_osm = {
         var nAttrs = {}; // the "new" TDS attrs
         var fCode2 = ''; // The second FCODE - if we have one
 
-		if (attrs['Feature Code'])
+        if (attrs['Feature Code'] && attrs['Feature Code'] !== 'Not found')
         {
             if (attrs['Feature Code'].indexOf(' & ') > -1)
             {
@@ -93,7 +96,15 @@ etds61_osm = {
                 var fcode = attrs['Feature Code'].split(':');
                 attrs['Feature Code'] = fcode[0];
             }
-		}
+        }
+        else
+        {
+            // No FCODE, throw error
+            // throw new Error('No Valid Feature Code');
+            // return null;
+            // return {attrs:{'error':'No Valid Feature Code'}, tableName: ''};
+            return {attrs:{}, tableName: ''};
+        }
 
         // Translate the single values from "English" to TDS
         for (var val in attrs)
@@ -111,11 +122,16 @@ etds61_osm = {
 
         // Use a lookup table to convert the remaining attribute names from "English" to TDS
         translate.applyOne2One(attrs, nAttrs, etds61_osm_rules.enumValues, {'k':'v'});
-
         var tags = {};
 
         // Now convert the attributes to tags.
         tags = tds61.toOsm(nAttrs,'',geometryType);
+
+        // Go looking for "OSM:XXX" values and copy them to the output
+        for (var i in attrs)
+        {
+            if (i.indexOf('OSM:') > -1) tags[i.replace('OSM:','')] = attrs[i];
+        }
 
         // Check if we have a second FCODE and if it can add any tags
         if (fCode2 !== '')
@@ -129,8 +145,10 @@ etds61_osm = {
                 }
                 else
                 {
-                    // Debug: Dump out the tags from the FCODE
-                    print('fCode2: ' + fCode2 + ' tried to replace ' + ftag[0] + ' = ' + tags[ftag[0]] + ' with ' + ftag[1]);
+                    if (ftag[1] !== tags[ftag[0]])
+                    {
+                        hoot.logVerbose('fCode2: ' + fCode2 + ' tried to replace ' + ftag[0] + ' = ' + tags[ftag[0]] + ' with ' + ftag[1]);
+                    }
                 }
             }
         }
@@ -149,4 +167,10 @@ etds61_osm = {
 
 } // End of etds61_osm
 
-exports.toOSM = etds61_osm.toOSM;
+if (typeof exports !== 'undefined') {
+    exports.toOSM = etds61_osm.toOSM;
+    exports.EnglishtoOSM = etds61_osm.toOSM;
+    exports.RawtoOSM = tds61.toOsm;
+    exports.OSMtoEnglish = etds61.toEnglish;
+    exports.OSMtoRaw = tds61.toNfdd;
+}

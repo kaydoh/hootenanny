@@ -22,17 +22,20 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 package hoot.services.controllers.osm;
 
-import static hoot.services.db2.QCurrentNodes.currentNodes;
+import static com.querydsl.core.group.GroupBy.groupBy;
+import static hoot.services.models.db.QCurrentNodes.currentNodes;
+import static hoot.services.utils.DbUtils.createQuery;
 
-import java.sql.Connection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+
+import javax.xml.transform.TransformerException;
 
 import org.apache.xpath.XPathAPI;
 import org.slf4j.Logger;
@@ -40,43 +43,38 @@ import org.slf4j.LoggerFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.NodeList;
 
-import com.mysema.query.sql.SQLQuery;
-
-import hoot.services.utils.DbUtils;
-import hoot.services.utils.DbUtils.EntityChangeType;
-import hoot.services.db2.CurrentNodes;
+import hoot.services.models.db.CurrentNodes;
 import hoot.services.models.osm.Element;
 import hoot.services.models.osm.Element.ElementType;
 import hoot.services.models.osm.ElementFactory;
+import hoot.services.utils.DbUtils.EntityChangeType;
 
 
-/**
- *
- */
 class ChangesetErrorChecker {
     private static final Logger logger = LoggerFactory.getLogger(ChangesetErrorChecker.class);
 
     private final Document changesetDoc;
     private final long mapId;
-    private final Connection dbConn;
 
-    ChangesetErrorChecker(Document changesetDoc, long mapId, Connection dbConn) {
+    ChangesetErrorChecker(Document changesetDoc, long mapId) {
         this.changesetDoc = changesetDoc;
         this.mapId = mapId;
-        this.dbConn = dbConn;
     }
 
-    /**
-     * @throws Exception
-     */
-    void checkForVersionErrors() throws Exception {
+    void checkForVersionErrors() {
         logger.debug("Checking for element version errors...");
 
         for (ElementType elementType : ElementType.values()) {
             if (elementType != ElementType.Changeset) {
                 for (EntityChangeType entityChangeType : EntityChangeType.values()) {
-                    NodeList elementXmlNodes = XPathAPI.selectNodeList(changesetDoc, "//osmChange/"
-                            + entityChangeType.toString().toLowerCase() + "/" + elementType.toString().toLowerCase());
+                    NodeList elementXmlNodes = null;
+                    try {
+                        elementXmlNodes = XPathAPI.selectNodeList(changesetDoc, "//osmChange/"
+                                + entityChangeType.toString().toLowerCase() + "/" + elementType.toString().toLowerCase());
+                    }
+                    catch (TransformerException e) {
+                        throw new RuntimeException("Error invoking XPathAPI!", e);
+                    }
 
                     Map<Long, Long> elementIdsToVersionsFromChangeset = new HashMap<>();
                     for (int i = 0; i < elementXmlNodes.getLength(); i++) {
@@ -86,8 +84,9 @@ class ChangesetErrorChecker {
                                 elementXmlNodes.item(i).getAttributes().getNamedItem("version").getNodeValue());
                         if (entityChangeType == EntityChangeType.CREATE) {
                             if (parsedVersion != 0) {
-                                throw new Exception("Invalid version: " + parsedVersion + " specified for created "
-                                        + elementType + " with ID: " + id + "; expected version 0.");
+                                throw new IllegalArgumentException("Invalid version: " + parsedVersion +
+                                        " specified for created " + elementType + " with ID: " + id +
+                                        "; expected version 0.");
                             }
                         }
                         else {
@@ -97,16 +96,16 @@ class ChangesetErrorChecker {
 
                     if ((entityChangeType != EntityChangeType.CREATE)
                             && (!elementIdsToVersionsFromChangeset.isEmpty())) {
-                        Element prototype = ElementFactory.create(mapId, elementType, dbConn);
-                        Map<Long, Long> elementIdsToVersionsFromDb = new SQLQuery(dbConn,
-                                DbUtils.getConfiguration(mapId))
-                                        .from(prototype.getElementTable())
-                                        .where(prototype.getElementIdField()
-                                                .in(elementIdsToVersionsFromChangeset.keySet()))
-                                        .map(prototype.getElementIdField(), prototype.getElementVersionField());
+                        Element prototype = ElementFactory.create(mapId, elementType);
+
+                        Map<Long, Long> elementIdsToVersionsFromDb = createQuery(mapId)
+                                .from(prototype.getElementTable())
+                                .where(prototype.getElementIdField()
+                                        .in(elementIdsToVersionsFromChangeset.keySet()))
+                                .transform(groupBy(prototype.getElementIdField()).as(prototype.getElementVersionField()));
 
                         if (!elementIdsToVersionsFromDb.equals(elementIdsToVersionsFromChangeset)) {
-                            throw new Exception("Invalid version specified for element(s).");
+                            throw new IllegalArgumentException("Invalid version specified for element(s).");
                         }
                     }
                 }
@@ -114,11 +113,8 @@ class ChangesetErrorChecker {
         }
     }
 
-    /**
-     * @throws Exception
-     *             //TODO: is this check actually necessary?
-     */
-    void checkForElementVisibilityErrors() throws Exception {
+    //TODO: is this check actually necessary?
+    void checkForElementVisibilityErrors() {
         logger.debug("Checking for element visibility errors...");
 
         // if a child element is referenced and is invisible, then fail.
@@ -134,9 +130,15 @@ class ChangesetErrorChecker {
                 // query to make this simpler... its just not working
                 for (EntityChangeType entityChangeType : EntityChangeType.values()) {
                     if (entityChangeType != EntityChangeType.DELETE) {
-                        NodeList relationMemberIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
-                                "//osmChange/" + entityChangeType.toString().toLowerCase()
-                                        + "/relation/member[@type = \"" + elementType.toString().toLowerCase() + "\"]");
+                        NodeList relationMemberIdXmlNodes;
+                        try {
+                            relationMemberIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
+                                    "//osmChange/" + entityChangeType.toString().toLowerCase()
+                                            + "/relation/member[@type = \"" + elementType.toString().toLowerCase() + "\"]");
+                        }
+                        catch (TransformerException e) {
+                            throw new RuntimeException("Error invoking XPathAPI!", e);
+                        }
 
                         for (int i = 0; i < relationMemberIdXmlNodes.getLength(); i++) {
                             // don't need to check for empty id here, b/c
@@ -151,8 +153,8 @@ class ChangesetErrorChecker {
                     }
                 }
 
-                if (!Element.allElementsVisible(mapId, elementType, relationMemberIds, dbConn)) {
-                    throw new Exception(elementType + " member(s) aren't visible for relation.");
+                if (!Element.allElementsVisible(mapId, elementType, relationMemberIds)) {
+                    throw new IllegalStateException(elementType + " member(s) aren't visible for relation.");
                 }
             }
         }
@@ -160,14 +162,19 @@ class ChangesetErrorChecker {
         Set<Long> wayNodeIds = new HashSet<>();
         for (EntityChangeType entityChangeType : EntityChangeType.values()) {
             if (entityChangeType != EntityChangeType.DELETE) {
-                NodeList wayNodeIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
-                        "//osmChange/" + entityChangeType.toString().toLowerCase() + "/way/nd");
+                NodeList wayNodeIdXmlNodes = null;
+                try {
+                    wayNodeIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
+                            "//osmChange/" + entityChangeType.toString().toLowerCase() + "/way/nd");
+                }
+                catch (TransformerException e) {
+                    throw new RuntimeException("Error invoking XPathAPI!", e);
+                }
 
                 for (int i = 0; i < wayNodeIdXmlNodes.getLength(); i++) {
                     // don't need to check for empty id here, b/c previous
                     // checking would have already errored out for it
-                    long id = Long
-                            .parseLong(wayNodeIdXmlNodes.item(i).getAttributes().getNamedItem("ref").getNodeValue());
+                    long id = Long.parseLong(wayNodeIdXmlNodes.item(i).getAttributes().getNamedItem("ref").getNodeValue());
 
                     if (id > 0) {
                         wayNodeIds.add(id);
@@ -176,12 +183,12 @@ class ChangesetErrorChecker {
             }
         }
 
-        if (!Element.allElementsVisible(mapId, ElementType.Node, wayNodeIds, dbConn)) {
-            throw new Exception("Way node(s) aren't visible for way.");
+        if (!Element.allElementsVisible(mapId, ElementType.Node, wayNodeIds)) {
+            throw new IllegalStateException("Way node(s) aren't visible for way.");
         }
     }
 
-    Map<Long, CurrentNodes> checkForElementExistenceErrors() throws Exception {
+    Map<Long, CurrentNodes> checkForElementExistenceErrors() {
         logger.debug("Checking for element existence errors...");
 
         // if an element is referenced (besides in its own create change) and doesn't exist in the db, then fail
@@ -198,8 +205,14 @@ class ChangesetErrorChecker {
         // check relation members
         for (ElementType elementType : ElementType.values()) {
             if (elementType != ElementType.Changeset) {
-                NodeList relationMemberIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
-                        "//osmChange/*/relation/member[@type = '" + elementType.toString().toLowerCase() + "']");
+                NodeList relationMemberIdXmlNodes = null;
+                try {
+                    relationMemberIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
+                            "//osmChange/*/relation/member[@type = '" + elementType.toString().toLowerCase() + "']");
+                }
+                catch (TransformerException e) {
+                    throw new RuntimeException("Error invoking XPathAPI!", e);
+                }
 
                 for (int i = 0; i < relationMemberIdXmlNodes.getLength(); i++) {
                     long id;
@@ -207,7 +220,7 @@ class ChangesetErrorChecker {
                         id = Long.parseLong(relationMemberIdXmlNodes.item(i).getAttributes().getNamedItem("ref").getNodeValue());
                     }
                     catch (NumberFormatException | NullPointerException e) {
-                        throw new Exception(emptyIdErrorMsg, e);
+                        throw new IllegalArgumentException(emptyIdErrorMsg, e);
                     }
 
                     if (id > 0) {
@@ -218,14 +231,21 @@ class ChangesetErrorChecker {
         }
 
         // check way nodes
-        NodeList wayNodeIdXmlNodes = XPathAPI.selectNodeList(changesetDoc, "//osmChange/*/way/nd/@ref");
+        NodeList wayNodeIdXmlNodes = null;
+        try {
+            wayNodeIdXmlNodes = XPathAPI.selectNodeList(changesetDoc, "//osmChange/*/way/nd/@ref");
+        }
+        catch (TransformerException e) {
+            throw new RuntimeException("Error calling XPathAPI!", e);
+        }
+
         for (int i = 0; i < wayNodeIdXmlNodes.getLength(); i++) {
             long id;
             try {
                 id = Long.parseLong(wayNodeIdXmlNodes.item(i).getNodeValue());
             }
             catch (NumberFormatException | NullPointerException e) {
-                throw new Exception(emptyIdErrorMsg, e);
+                throw new IllegalArgumentException(emptyIdErrorMsg, e);
             }
 
             if (id > 0) {
@@ -239,9 +259,15 @@ class ChangesetErrorChecker {
 
                 for (ElementType elementType : ElementType.values()) {
                     if (elementType != ElementType.Changeset) {
-                        NodeList elementIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
-                                "//osmChange/" + entityChangeType.toString().toLowerCase() + "/"
-                                        + elementType.toString().toLowerCase() + "/@id");
+                        NodeList elementIdXmlNodes = null;
+                        try {
+                            elementIdXmlNodes = XPathAPI.selectNodeList(changesetDoc,
+                                    "//osmChange/" + entityChangeType.toString().toLowerCase() + "/"
+                                            + elementType.toString().toLowerCase() + "/@id");
+                        }
+                        catch (TransformerException e) {
+                            throw new RuntimeException("Error calling XPathAPI!", e);
+                        }
 
                         for (int i = 0; i < elementIdXmlNodes.getLength(); i++) {
                             long id;
@@ -249,7 +275,7 @@ class ChangesetErrorChecker {
                                 id = Long.parseLong(elementIdXmlNodes.item(i).getNodeValue());
                             }
                             catch (NumberFormatException | NullPointerException e) {
-                                throw new Exception(emptyIdErrorMsg, e);
+                                throw new IllegalArgumentException(emptyIdErrorMsg, e);
                             }
                             if (id > 0) {
                                 elementTypesToElementIds.get(elementType).add(id);
@@ -262,17 +288,18 @@ class ChangesetErrorChecker {
 
         for (ElementType elementType : ElementType.values()) {
             if (elementType != ElementType.Changeset) {
-                if (!Element.allElementsExist(mapId, elementType, elementTypesToElementIds.get(elementType), dbConn)) {
+                if (!Element.allElementsExist(mapId, elementType, elementTypesToElementIds.get(elementType))) {
                     // TODO: list the id's and types of the elements that don't exist
-                    throw new Exception("Element(s) being referenced don't exist.");
+                    throw new IllegalStateException("Element(s) being referenced don't exist.");
                 }
             }
         }
 
         if (!elementTypesToElementIds.get(ElementType.Node).isEmpty()) {
-            return new SQLQuery(dbConn, DbUtils.getConfiguration(mapId)).from(currentNodes)
+            return createQuery(mapId)
+                    .from(currentNodes)
                     .where(currentNodes.id.in(elementTypesToElementIds.get(ElementType.Node)))
-                    .map(currentNodes.id, currentNodes);
+                    .transform(groupBy(currentNodes.id).as(currentNodes));
         }
 
         return null;

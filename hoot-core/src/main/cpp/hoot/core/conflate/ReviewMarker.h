@@ -22,7 +22,7 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 #ifndef REVIEWMARKER_H
 #define REVIEWMARKER_H
@@ -52,6 +52,11 @@ public:
   /// for other operations.
   static QString reviewSortOrderKey;
 
+  /// This is in place so that we know the original number of members in the review relations in case
+  /// one of them is deleted during the process as a result of a merge.  This information can then
+  /// be used during cleanup of review relations for validity purposes.
+  static QString reviewMemberCountKey;
+
   ReviewMarker();
 
   static QString getBadGeometryType() { return _complexGeometryType; }
@@ -61,6 +66,8 @@ public:
   static set<ReviewUid> getReviewUids(const ConstOsmMapPtr &map, ConstElementPtr e1);
 
   static QString getReviewType(const ConstOsmMapPtr &map, ReviewUid uid);
+
+  static set<ReviewUid> getReviewUids(const ConstOsmMapPtr &map);
 
   /**
    * Returns true if the element is in at least one review.
@@ -138,7 +145,7 @@ private:
   void _updateScore(Tags& t, double score);
 
   // for white box testing.
-  friend class RemoveEmptyReviewRelationsVisitorTest;
+  friend class RemoveInvalidReviewRelationsVisitorTest;
 };
 
 }

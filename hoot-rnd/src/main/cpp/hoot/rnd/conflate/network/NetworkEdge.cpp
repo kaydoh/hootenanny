@@ -35,12 +35,12 @@ NetworkEdge::NetworkEdge() : _directed(false)
 {
 }
 
-NetworkEdge::NetworkEdge(NetworkVertexPtr from, NetworkVertexPtr to, bool directed) :
+NetworkEdge::NetworkEdge(ConstNetworkVertexPtr from, ConstNetworkVertexPtr to, bool directed) :
   _from(from),
   _to(to),
   _directed(directed)
 {
-
+  //_members.clear();
 }
 
 Meters NetworkEdge::calculateLength(const ConstElementProviderPtr& provider) const
@@ -51,6 +51,11 @@ Meters NetworkEdge::calculateLength(const ConstElementProviderPtr& provider) con
   }
 
   return ElementConverter(provider).calculateLength(_members[0]);
+}
+
+bool NetworkEdge::contains(const ConstNetworkVertexPtr& v) const
+{
+  return _from == v || _to == v;
 }
 
 QString NetworkEdge::toString() const
@@ -65,13 +70,13 @@ QString NetworkEdge::toString() const
 
   if (_directed)
   {
-    result = QString("%1 -- %2 --> %3").arg(_from->toString()).arg(memberIds.join(",")).
-      arg(_to->toString());
+    result = QString("%1 -- %2 --> %3").arg(hoot::toString(_from)).arg(memberIds.join(",")).
+      arg(hoot::toString(_to));
   }
   else
   {
-    result = QString("%1 -- %2 -- %3").arg(_from->toString()).arg(memberIds.join(",")).
-      arg(_to->toString());
+    result = QString("%1 -- %2 -- %3").arg(hoot::toString(_from)).arg(memberIds.join(",")).
+      arg(hoot::toString(_to));
   }
 
   return result;

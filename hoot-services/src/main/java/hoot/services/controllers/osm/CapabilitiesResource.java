@@ -28,22 +28,18 @@ package hoot.services.controllers.osm;
 
 import static hoot.services.HootProperties.*;
 
-import java.io.IOException;
-
-import javax.ws.rs.Consumes;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import javax.ws.rs.core.Response.Status;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.dom.DOMSource;
 
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Controller;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
@@ -53,6 +49,7 @@ import hoot.services.utils.XmlDocumentBuilder;
 /**
  * Service endpoint for OSM capabilities
  */
+@Controller
 @Path("/api/capabilities")
 public class CapabilitiesResource {
     private static final Logger logger = LoggerFactory.getLogger(CapabilitiesResource.class);
@@ -67,29 +64,19 @@ public class CapabilitiesResource {
      * @return Capability OSM XML
      */
     @GET
-    @Consumes(MediaType.TEXT_PLAIN)
     @Produces(MediaType.TEXT_XML)
     public Response get() {
         Document responseDoc;
 
         try {
-            logger.info("Retrieving capabilities...");
-
             responseDoc = writeResponse();
         }
         catch (Exception e) {
-            String message = "Error retrieving capabilities: " + e.getMessage();
-            throw new WebApplicationException(e, Response.status(Status.INTERNAL_SERVER_ERROR).entity(message).build());
+            String message = "Error retrieving capabilities. Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(message).build());
         }
 
-        try {
-            logger.debug("Returning response: {} ...", StringUtils.abbreviate(XmlDocumentBuilder.toString(responseDoc), 100));
-        }
-        catch (IOException ignored) {
-        }
-
-        return Response.ok(new DOMSource(responseDoc), MediaType.TEXT_XML)
-                .header("Content-type", MediaType.TEXT_XML).build();
+        return Response.ok(new DOMSource(responseDoc)).build();
     }
 
     /**
@@ -98,8 +85,6 @@ public class CapabilitiesResource {
      * @return an XML document
      */
     private static Document writeResponse() throws ParserConfigurationException {
-        logger.debug("Building response...");
-
         Document responseDoc = XmlDocumentBuilder.create();
 
         Element osmElement = OsmResponseHeaderGenerator.getOsmDataHeader(responseDoc);

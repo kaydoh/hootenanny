@@ -28,13 +28,20 @@ package hoot.services.utils;
 
 import java.io.IOException;
 import java.io.StringWriter;
+import java.util.HashMap;
+import java.util.Map;
 
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.JsonGenerator;
-import org.codehaus.jackson.JsonNode;
-import org.codehaus.jackson.map.ObjectMapper;
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
+import org.json.simple.parser.ParseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 
 /**
@@ -91,4 +98,50 @@ public final class JsonUtils {
         return null;
     }
 
+    /**
+     *
+     *
+     * @param input
+     * @return String
+     */
+    public static String escapeJson(String input) throws ParseException {
+        JSONParser parser = new JSONParser();
+        JSONObject json = (JSONObject) parser.parse(input);
+
+        // Special handling of ADV_OPTIONS
+        String key = "ADV_OPTIONS";
+        if (json.containsKey(key)) {
+            String advopts = json.get(key).toString();
+            String cleanup = advopts
+                    .replaceAll("-D \"", "'")
+                    .replaceAll("=", "': '")
+                    .replaceAll("\"", "',")
+                    .replaceAll("'", "\"");
+
+            // wrap with curly braces and remove trailing comma
+            cleanup = "{" + cleanup.substring(0, cleanup.length() - 1) + "}";
+
+            JSONObject obj = (JSONObject) parser.parse(cleanup);
+            json.put(key, obj);
+        }
+
+        return JSONObject.escape(json.toString());
+    }
+
+    public static Map<String, String> paramsToMap(JSONObject command) {
+        JSONArray paramsList = (JSONArray) command.get("params");
+
+        Map<String, String> paramsMap = new HashMap<>();
+        for (Object aParamsList : paramsList) {
+            JSONObject o = (JSONObject) aParamsList;
+            for (Object o1 : o.entrySet()) {
+                Map.Entry<Object, Object> mEntry = (Map.Entry<Object, Object>) o1;
+                String key = (String) mEntry.getKey();
+                String val = (String) mEntry.getValue();
+                paramsMap.put(key, val);
+            }
+        }
+
+        return paramsMap;
+    }
 }

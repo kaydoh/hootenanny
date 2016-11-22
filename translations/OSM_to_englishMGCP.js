@@ -60,6 +60,15 @@ function initialize()
 {
     // Make sure the MGCP translator exports extra tags to the TXT field
     hoot.Settings.set({"ogr.mgcp.extra":"note"});
+
+    // Throw errors instead of returning partial translations/o2s_X features
+    hoot.Settings.set({"ogr.throw.error":"true"});
+
+    // Turn off the ESRI FCSUBTYPE
+    hoot.Settings.set({"ogr.tds.add.fcsubtype":"false"});
+
+    // Set the schema type for the export
+    hoot.Settings.set({"osm.map.writer.schema":"MGCP"});
 }
 
 
@@ -95,8 +104,3 @@ function translateToOgr(tags, elementType, geometryType)
 {
         return emgcp.toEnglish(tags, elementType, geometryType)
 } // End of translateToOgr
-
-
-
-
-

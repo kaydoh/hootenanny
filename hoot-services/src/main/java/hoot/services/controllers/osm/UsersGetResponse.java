@@ -28,14 +28,17 @@ package hoot.services.controllers.osm;
 
 import java.util.List;
 
-import javax.xml.bind.annotation.XmlRootElement;
-
-import hoot.services.db2.Users;
+import hoot.services.models.db.Users;
 
 
-@XmlRootElement
 public class UsersGetResponse {
     private List<Users> users;
+
+    public UsersGetResponse() {}
+
+    public UsersGetResponse(List<Users> users) {
+        this.users = users;
+    }
 
     public List<Users> getUsers() {
         return this.users;
@@ -43,13 +46,5 @@ public class UsersGetResponse {
 
     public void setUsers(List<Users> users) {
         this.users = users;
-    }
-
-    public UsersGetResponse(List<Users> users) {
-        this.users = users;
-    }
-
-    public UsersGetResponse() {
-
     }
 }

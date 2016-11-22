@@ -22,19 +22,20 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 package hoot.services.controllers.osm;
-
-import javax.xml.bind.annotation.XmlRootElement;
-
 
 /**
  * Model class for the Hootenanny folder record
  */
-@XmlRootElement
+
 public class FolderRecord {
     private long id;
+    private long parentId;
+    private String name;
+
+    public FolderRecord() {}
 
     public long getId() {
         return id;
@@ -44,8 +45,6 @@ public class FolderRecord {
         this.id = id;
     }
 
-    private long parentId;
-
     public long getParentId() {
         return parentId;
     }
@@ -54,17 +53,11 @@ public class FolderRecord {
         this.parentId = parentId;
     }
 
-    private String name;
-
     public String getName() {
         return name;
     }
 
     public void setName(String name) {
         this.name = name;
-    }
-
-    public FolderRecord() {
-
     }
 }

@@ -50,38 +50,23 @@ etds40 = {
         }
 
         var eAttrs = {}; // The final English output
-
-        // Add a default value for the FCODE
         eAttrs['Feature Code'] = 'Not found';
 
+        // Defensive: This will either be populated or we threw an error earlier
         if (tdsData.length > 0)
         {
             for (var fNum = 0, fLen = tdsData.length; fNum < fLen; fNum++)
             {
                 var tFCODE = tdsData[fNum]['attrs']['F_CODE'];
 
-                // Go through the list of possible attributes and add the missing ones
-                var tmpList = etds40.rules.fcodeLookup[tFCODE]['enum'];
-
-                for (var i=0, elen = tmpList.length; i < elen; i++)
-                {
-                    // If we don't find one, add it with it's default value
-                    if (!(tdsData[fNum]['attrs'][tmpList[i]]))
-                    {
-                        tdsData[fNum]['attrs'][tmpList[i]] = etds40.rules.engDefault[tmpList[i]];
-                    }
-                }
+                delete tdsData[fNum]['attrs']['F_CODE'];
 
                 // Translate the single values
                 for (var val in tdsData[fNum]['attrs'])
                 {
                     if (val in etds40.rules.engSingle)
                     {
-                        if (tdsData[fNum]['attrs'][val] == undefined)
-                        {
-                            eAttrs[etds40.rules.engSingle[val]] = etds40.rules.engDefault[val];
-                        }
-                        else
+                        if (tdsData[fNum]['attrs'][val] !== undefined)
                         {
                             eAttrs[etds40.rules.engSingle[val]] = tdsData[fNum]['attrs'][val];
                         }
@@ -108,16 +93,6 @@ etds40 = {
                 }
             } // End for tdsData
 
-        }
-        else
-        {
-            // If we can't find an FCODE, just return the tags.
-
-            // Add "OSM:" to each of the tags
-            for (var i in tags)
-            {
-                eAttrs['OSM:' + i] = tags[i];
-            }
         }
 
         if (config.getOgrDebugDumptags() == 'true')

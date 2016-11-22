@@ -22,16 +22,14 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 package hoot.services.controllers.job.custom.hgis;
 
-import javax.xml.bind.annotation.XmlRootElement;
 
-
-@XmlRootElement
 public class PrepareForValidationRequest {
     private String sourceMap;
+    private String outputMap;
 
     public String getSourceMap() {
         return this.sourceMap;
@@ -40,8 +38,6 @@ public class PrepareForValidationRequest {
     public void setSourceMap(String srcMap) {
         this.sourceMap = srcMap;
     }
-
-    private String outputMap;
 
     public String getOutputMap() {
         return this.outputMap;

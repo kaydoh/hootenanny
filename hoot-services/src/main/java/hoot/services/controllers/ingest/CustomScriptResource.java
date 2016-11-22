@@ -48,7 +48,6 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import javax.ws.rs.core.Response.Status;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -62,10 +61,10 @@ import org.mozilla.javascript.Function;
 import org.mozilla.javascript.ScriptableObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Controller;
 
-import hoot.services.utils.CaseInsensitiveStringList;
 
-
+@Controller
 @Path("/customscript")
 public class CustomScriptResource {
     private static final Logger logger = LoggerFactory.getLogger(CustomScriptResource.class);
@@ -132,7 +131,7 @@ public class CustomScriptResource {
     @POST
     @Path("/save")
     @Consumes(MediaType.TEXT_PLAIN)
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response processSave(String script,
                                 @QueryParam("SCRIPT_NAME") String scriptName,
                                 @QueryParam("SCRIPT_DESCRIPTION") String scriptDescription) {
@@ -141,12 +140,12 @@ public class CustomScriptResource {
         try {
             saveArr.add(saveScript(scriptName, scriptDescription, script));
         }
-        catch (Exception ex) {
-            String msg = "Error processing script save for: " + scriptName + " Error: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+        catch (Exception e) {
+            String msg = "Error processing script save for: " + scriptName + ".  Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(msg).build());
         }
 
-        return Response.ok(saveArr.toString(), MediaType.TEXT_PLAIN).build();
+        return Response.ok(saveArr.toString()).build();
     }
 
     @POST
@@ -167,9 +166,9 @@ public class CustomScriptResource {
 
             response.setScriptsModified(scriptsModified.toArray(new String[scriptsModified.size()]));
         }
-        catch (Exception ex) {
-            String msg = "Error processing script save.  Error: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+        catch (Exception e) {
+            String msg = "Error processing save scripts request.  Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(msg).build());
         }
 
         return response;
@@ -185,7 +184,7 @@ public class CustomScriptResource {
      */
     @GET
     @Path("/getlist")
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response getScriptsList() {
         JSONArray retList = new JSONArray();
         JSONArray filesList = new JSONArray();
@@ -230,12 +229,12 @@ public class CustomScriptResource {
 
             retList.addAll(sortedScripts.values());
         }
-        catch (Exception ex) {
-            String msg = "Error getting scripts list: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+        catch (Exception e) {
+            String msg = "Error getting scripts list.  Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(msg).build());
         }
 
-        return Response.ok(retList.toString(), MediaType.TEXT_PLAIN).build();
+        return Response.ok(retList.toString()).build();
     }
 
     /**
@@ -366,11 +365,11 @@ public class CustomScriptResource {
             }
         }
         catch (Exception ex) {
-            String msg = "Error getting script: " + scriptName + " Error: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+            String msg = "Error getting script: " + scriptName;
+            throw new WebApplicationException(ex, Response.serverError().entity(msg).build());
         }
 
-        return Response.ok(script, MediaType.TEXT_PLAIN).build();
+        return Response.ok(script).build();
     }
 
     /**
@@ -399,8 +398,7 @@ public class CustomScriptResource {
      * return tags; }
      * 
      * @param scriptPath
-     *            Relative path of default translation script. (Relative to hoot
-     *            home path)
+     *            Relative path of default translation script. (Relative to hoot home path)
      * @return Requested translation script
      */
     @GET
@@ -419,39 +417,39 @@ public class CustomScriptResource {
             JSONArray defList = getDefaultList(configFiles);
 
             // See Bug #6483 Read vulnerability in services script API
-            boolean bPathValidated = false;
+            boolean pathValidated = false;
             for (Object aDefList : defList) {
                 JSONObject item = (JSONObject) aDefList;
 
-                Object oPath = item.get("PATH");
-                if ((oPath != null) && scriptPath.equals(oPath.toString())) {
-                    bPathValidated = true;
+                Object path = item.get("PATH");
+                if ((path != null) && scriptPath.equals(path.toString())) {
+                    pathValidated = true;
                     break;
                 }
 
-                Object oFouoPath = item.get("FOUO_PATH");
-                if ((oFouoPath != null) && scriptPath.equals(oFouoPath.toString())) {
-                    bPathValidated = true;
+                Object fouoPath = item.get("FOUO_PATH");
+                if ((fouoPath != null) && scriptPath.equals(fouoPath.toString())) {
+                    pathValidated = true;
                     break;
                 }
             }
 
-            if (bPathValidated) {
+            if (pathValidated) {
                 File scriptFile = new File(HOME_FOLDER, scriptPath);
                 if (scriptFile.exists()) {
                     script = FileUtils.readFileToString(scriptFile);
                 }
             }
             else {
-                throw new Exception("Invalid script path.");
+                throw new IOException("Invalid script path: " + scriptPath);
             }
         }
         catch (Exception ex) {
-            String msg = "Error getting script: " + scriptPath + " Error: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+            String msg = "Error getting script: " + scriptPath;
+            throw new WebApplicationException(ex, Response.serverError().entity(msg).build());
         }
 
-        return Response.ok(script, MediaType.TEXT_PLAIN).build();
+        return Response.ok(script).build();
     }
 
     /**
@@ -463,47 +461,42 @@ public class CustomScriptResource {
      * 
      * @param scriptName
      *            Name of the script to delete.
-     * @return JSON Array containing JSON of name and description of deleted
-     *         scripts
+     * @return JSON Array containing JSON of name and description of deleted scripts
      */
     @GET
     @Path("/deletescript")
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response deleteScript(@QueryParam("SCRIPT_NAME") String scriptName) {
         JSONArray delArr = new JSONArray();
+
         try {
             List<File> files = getFilesInScriptDir();
             if (files == null) {
-                throw new Exception("Script directory does not exist.");
+                throw new IOException("Script directory does not exist.");
             }
 
             for (File file : files) {
-                try {
-                    String content = FileUtils.readFileToString(file, "UTF-8");
-                    JSONObject oScript = getScriptObject(content);
+                String content = FileUtils.readFileToString(file, "UTF-8");
+                JSONObject oScript = getScriptObject(content);
 
-                    if (oScript != null) {
-                        JSONObject header = (JSONObject) oScript.get("HEADER");
-                        if (header.get("NAME").toString().equalsIgnoreCase(scriptName)) {
-                            delArr.add(header);
-                            if (!file.delete()) {
-                                logger.error("Error deleting {} file!", file.getAbsolutePath());
-                            }
-                            break;
+                if (oScript != null) {
+                    JSONObject header = (JSONObject) oScript.get("HEADER");
+                    if (header.get("NAME").toString().equalsIgnoreCase(scriptName)) {
+                        delArr.add(header);
+                        if (!file.delete()) {
+                            throw new IOException("Error deleting script: " + file.getAbsolutePath());
                         }
+                        break;
                     }
-                }
-                catch (Exception e) {
-                    logger.error("Failed to read file header: {}", e.getMessage(), e);
                 }
             }
         }
         catch (Exception ex) {
-            String msg = "Error deleting script: " + scriptName + " Error: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+            String msg = "Error deleting script: " + scriptName;
+            throw new WebApplicationException(ex, Response.serverError().entity(msg).build());
         }
 
-        return Response.ok(delArr.toString(), MediaType.TEXT_PLAIN).build();
+        return Response.ok(delArr.toString()).build();
     }
 
     /**
@@ -529,33 +522,28 @@ public class CustomScriptResource {
             response = new ScriptsModifiedResponse();
             List<String> scriptsDeleted = new ArrayList<>();
             for (File file : files) {
-                try {
-                    String content = FileUtils.readFileToString(file, "UTF-8");
-                    JSONObject oScript = getScriptObject(content);
-                    if (oScript != null) {
-                        JSONObject header = (JSONObject) oScript.get("HEADER");
-                        String foundScriptName = header.get("NAME").toString();
-                        if (scriptNames.contains(foundScriptName)) {
-                            scriptsDeleted.add(foundScriptName);
-                            if (file.delete()) {
-                                logger.debug("Deleted script: {}", foundScriptName);
-                            }
-                            else {
-                                logger.error("Error deleting {} script!", file.getAbsolutePath());
-                            }
+                String content = FileUtils.readFileToString(file, "UTF-8");
+                JSONObject oScript = getScriptObject(content);
+                if (oScript != null) {
+                    JSONObject header = (JSONObject) oScript.get("HEADER");
+                    String foundScriptName = header.get("NAME").toString();
+                    if (scriptNames.contains(foundScriptName)) {
+                        scriptsDeleted.add(foundScriptName);
+                        if (file.delete()) {
+                            logger.debug("Deleted script: {}", foundScriptName);
+                        }
+                        else {
+                            throw new IOException("Error deleting script: " + file.getAbsolutePath());
                         }
                     }
-                }
-                catch (Exception e) {
-                    logger.error("Failed to read file header for script: {}{}", file.getName(), e.getMessage(), e);
                 }
             }
 
             response.setScriptsModified(scriptsDeleted.toArray(new String[scriptsDeleted.size()]));
         }
         catch (Exception ex) {
-            String msg = "Error deleting scripts:  Error: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+            String msg = "Error deleting scripts!";
+            throw new WebApplicationException(ex, Response.serverError().entity(msg).build());
         }
 
         return response;
@@ -597,7 +585,7 @@ public class CustomScriptResource {
         return (List<File>) FileUtils.listFiles(scriptsDir, exts, false);
     }
 
-    private static JSONObject saveScript(String name, String description, String content) throws Exception {
+    private static JSONObject saveScript(String name, String description, String content) throws IOException {
         if (StringUtils.trimToNull(name) == null) {
             logger.error("Invalid input script name: {}", name);
             return null;
@@ -615,7 +603,7 @@ public class CustomScriptResource {
         }
 
         if (!hoot.services.utils.FileUtils.validateFilePath(SCRIPT_FOLDER, SCRIPT_FOLDER + "/" + name + ".js")) {
-            throw new Exception("Script name can not contain path.");
+            throw new IOException("Script name can not contain path.");
         }
 
         File fScript = new File(SCRIPT_FOLDER, name + ".js");
@@ -691,5 +679,22 @@ public class CustomScriptResource {
         }
 
         return canExport;
+    }
+
+    /**
+     * A case insensitive string list
+     */
+    private static class CaseInsensitiveStringList extends ArrayList<String> {
+
+        @Override
+        public boolean contains(Object o) {
+            String paramStr = (String) o;
+            for (String s : this) {
+                if (paramStr.equalsIgnoreCase(s)) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 }

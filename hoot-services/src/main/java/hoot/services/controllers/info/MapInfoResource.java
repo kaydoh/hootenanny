@@ -35,22 +35,34 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import javax.ws.rs.core.Response.Status;
 
-import org.codehaus.jettison.json.JSONArray;
+import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Controller;
+import org.springframework.transaction.annotation.Transactional;
 
 import hoot.services.utils.DbUtils;
 
 
+@Controller
 @Path("/map")
+@Transactional(readOnly = true)
 public class MapInfoResource {
     private static final Logger logger = LoggerFactory.getLogger(MapInfoResource.class);
 
-    public MapInfoResource() {
-    }
+    private static final String[] maptables = {
+            "changesets",
+            "current_nodes",
+            "current_relation_members",
+            "current_relations",
+            "current_way_nodes",
+            "current_ways"
+    };
+
+
+    public MapInfoResource() {}
 
     /**
      * Service method endpoint for retrieving the physical size of a map record.
@@ -58,48 +70,39 @@ public class MapInfoResource {
      * GET hoot-services/info/map/size?mapid=1
      * 
      * @param mapIds
-     *            ids of the maps for which to retrieve sizes
+     *            id of the map for which to retrieve size
      * @return JSON containing size information
      */
     @GET
     @Path("/size")
-    @Produces(MediaType.TEXT_PLAIN)
-    public Response getMapSize(@QueryParam("mapid") String mapIds) {
-        long nsize = 0;
-        String[] maptables = {
-                "changesets",
-                "current_nodes",
-                "current_relation_members",
-                "current_relations",
-                "current_way_nodes",
-                "current_ways"
-        };
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response getCombinedMapSize(@QueryParam("mapid") String mapIds) {
+        long combinedMapSize = 0;
 
         try {
             String[] mapids = mapIds.split(",");
             for (String mapId : mapids) {
                 if (Long.parseLong(mapId) != -1) { // skips OSM API db layer
                     for (String table : maptables) {
-                        nsize += DbUtils.getTableSizeInByte(table + "_" + mapId);
+                        combinedMapSize += DbUtils.getTableSizeInBytes(table + "_" + mapId);
                     }
                 }
             }
         }
-        catch (Exception ex) {
-            String message = "Error getting map size: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(message).build());
+        catch (Exception e) {
+            String message = "Error getting combined map size for: " + mapIds + ".  Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(message).build());
         }
 
-        JSONObject res = new JSONObject();
-        res.put("mapid", mapIds);
-        res.put("size_byte", nsize);
+        JSONObject entity = new JSONObject();
+        entity.put("mapid", mapIds);
+        entity.put("size_byte", combinedMapSize);
 
-        return Response.ok(res.toJSONString(), MediaType.APPLICATION_JSON).build();
+        return Response.ok(entity.toJSONString()).build();
     }
 
     /**
-     * Service method endpoint for retrieving the physical size of multiple map
-     * records.
+     * Service method endpoint for retrieving the physical size of multiple map records.
      * 
      * GET hoot-services/info/map/sizes?mapid=54,62
      * 
@@ -109,47 +112,34 @@ public class MapInfoResource {
      */
     @GET
     @Path("/sizes")
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response getMapSizes(@QueryParam("mapid") String mapIds) {
-        String[] maptables = {
-                "changesets",
-                "current_nodes",
-                "current_relation_members",
-                "current_relations",
-                "current_way_nodes",
-                "current_ways"
-        };
-
-        JSONArray retval = new JSONArray();
+        JSONArray layers = new JSONArray();
 
         try {
             String[] mapids = mapIds.split(",");
             for (String mapId : mapids) {
-                JSONObject jsonObject = new JSONObject();
-                long nsize = 0;
-                try {
-                    for (String table : maptables) {
-                        if (Long.parseLong(mapId) != -1) { // skips OSM API db layer
-                            nsize += DbUtils.getTableSizeInByte(table + "_" + mapId);
-                        }
+                long mapSize = 0;
+                for (String table : maptables) {
+                    if (Long.parseLong(mapId) != -1) { // skips OSM API db layer
+                        mapSize += DbUtils.getTableSizeInBytes(table + "_" + mapId);
                     }
                 }
-                finally {
-                    jsonObject.put("id", Long.parseLong(mapId));
-                    jsonObject.put("size", nsize);
-                    retval.put(jsonObject);
-                }
+                JSONObject layer = new JSONObject();
+                layer.put("id", Long.parseLong(mapId));
+                layer.put("size", mapSize);
+                layers.add(layer);
             }
         }
-        catch (Exception ex) {
-            String message = "Error getting map size: " + ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(message).build());
+        catch (Exception e) {
+            String message = "Error getting map size.  Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(message).build());
         }
 
-        JSONObject res = new JSONObject();
-        res.put("layers", retval);
+        JSONObject entity = new JSONObject();
+        entity.put("layers", layers);
 
-        return Response.ok(res.toJSONString(), MediaType.APPLICATION_JSON).build();
+        return Response.ok(entity.toJSONString()).build();
     }
 
     /**
@@ -161,13 +151,13 @@ public class MapInfoResource {
      */
     @GET
     @Path("/thresholds")
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response getThresholds() {
-        JSONObject res = new JSONObject();
-        res.put("conflate_threshold", CONFLATE_SIZE_THRESHOLD);
-        res.put("ingest_threshold", INGEST_SIZE_THRESHOLD);
-        res.put("export_threshold", EXPORT_SIZE_THRESHOLD);
+        JSONObject entity = new JSONObject();
+        entity.put("conflate_threshold", CONFLATE_SIZE_THRESHOLD);
+        entity.put("ingest_threshold", INGEST_SIZE_THRESHOLD);
+        entity.put("export_threshold", EXPORT_SIZE_THRESHOLD);
 
-        return Response.ok(res.toJSONString(), MediaType.APPLICATION_JSON).build();
+        return Response.ok(entity.toJSONString()).build();
     }
 }

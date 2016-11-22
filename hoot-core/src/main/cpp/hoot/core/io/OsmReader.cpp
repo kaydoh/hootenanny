@@ -5,7 +5,7 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
+ * 
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -294,7 +294,16 @@ Status OsmReader::_parseStatus(QString s)
 {
   Status result;
 
-  result = Status((Status::Type)_parseInt(s));
+  if (s.length() > 2)
+  {
+    // Try parsing the status as a string, not an int
+    result = Status::fromString(s);
+  }
+  else
+  {
+    result = Status((Status::Type)_parseInt(s));
+  }
+
   if (result.getEnum() < Status::Invalid || result.getEnum() > Status::Conflated)
   {
     throw HootException(QObject::tr("Invalid status value: %1").arg(s));
@@ -327,8 +336,9 @@ void OsmReader::read(shared_ptr<OsmMap> map)
     _path.chop(std::strlen(".bz2"));
 
     // "man bunzip2" confirms success return code is zero
-    //  -k option is "keep," meaning don't delete input .osm.bz2
-    const std::string cmd(std::string("bunzip2 -k ") + originalFile.toStdString());
+    // -f option decompresses file even if decompressed file is already there
+    // -k option is "keep", meaning don't delete input .osm.bz2
+    const std::string cmd(std::string("bunzip2 -fk ") + originalFile.toStdString());
     LOG_DEBUG("Running uncompress command: " << cmd);
 
     int retVal;

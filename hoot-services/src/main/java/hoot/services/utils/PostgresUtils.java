@@ -22,17 +22,16 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 package hoot.services.utils;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-import org.apache.commons.lang3.StringUtils;
-import org.postgresql.util.PGobject;
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
 
 
 /**
@@ -40,48 +39,70 @@ import org.postgresql.util.PGobject;
  */
 public final class PostgresUtils {
 
-    private PostgresUtils() {
-    }
+    private PostgresUtils() {}
 
     /**
-     * Converts an hstore Postgres object to a string map
+     * Converts an hstore Postgres object to Map<String, String>
      * 
      * @param postgresObj
      *            a Postgres object containing an hstore
+
      * @return a string map with the hstore's data
      */
-    public static Map<String, String> postgresObjToHStore(PGobject postgresObj) {
+    public static Map<String, String> postgresObjToHStore(Object postgresObj) {
         // type = hstore
         // value = "key 1"=>"val 1", "key 2"=>"val 2"
 
-        Map<String, String> hstore = new HashMap<>();
+        Map<String, String> hstore = (Map<String, String>) postgresObj;
 
-        if ((postgresObj != null) && (postgresObj.getValue() != null)
-                && (StringUtils.trimToNull(postgresObj.getValue()) != null)) {
-            String tagsStr = postgresObj.getValue();
-            hstore = parseTags(tagsStr);
+        if (hstore == null) {
+            hstore = new HashMap<>();
         }
+
         return hstore;
     }
 
-    static Map<String, String> parseTags(String tagsStr) {
-        Map<String, String> tagsMap = new HashMap<>();
+    /**
+     * Converts JSON object to Postgesql hStore objects
+     *
+     * @param tags
+     *            - json containing tags kv
+     * @return - Expression Object for QueryDSL consumption
+     */
+    public static Object jsonToHStore(JSONObject tags) {
+        Map<String, String> hStoreObject = new HashMap<>();
 
-        if ((tagsStr != null) && (!tagsStr.isEmpty())) {
-            Pattern regex = Pattern.compile("(\"[^\"]*\")=>(\"(?:\\\\.|[^\"\\\\]+)*\"|[^,\"]*)");
-            Matcher regexMatcher = regex.matcher(tagsStr);
-            while (regexMatcher.find()) {
-                String key = regexMatcher.group(1);
-                key = StringUtils.removeStart(key, "\"");
-                key = StringUtils.removeEnd(key, "\"");
-                String val = regexMatcher.group(2);
-                val = StringUtils.removeStart(val, "\"");
-                val = StringUtils.removeEnd(val, "\"");
-                tagsMap.put(key, val);
+        if (tags != null) {
+            for (Object it : tags.entrySet()) {
+                Map.Entry<Object, Object> pairs = (Map.Entry<Object, Object>) it;
+
+                String jsonStr;
+                Object oVal = tags.get(pairs.getKey());
+
+                if (oVal instanceof JSONObject) {
+                    jsonStr = ((JSONObject) oVal).toJSONString();
+                }
+                else if (oVal instanceof JSONArray) {
+                    jsonStr = ((JSONArray) oVal).toJSONString();
+                }
+                else if (oVal instanceof Map) {
+                    jsonStr = JSONObject.toJSONString((Map) oVal);
+                }
+                else if (oVal instanceof List) {
+                    jsonStr = JSONArray.toJSONString((List) oVal);
+                }
+                else {
+                    jsonStr = oVal.toString();
+                }
+
+                jsonStr = jsonStr.replace("\\", "\\\\");
+                jsonStr = jsonStr.replace("'", "''");
+                jsonStr = jsonStr.replace("\"", "\\\"");
+
+                hStoreObject.put(pairs.getKey().toString(), jsonStr);
             }
         }
 
-        return tagsMap;
+        return hStoreObject;
     }
-
 }

@@ -26,45 +26,47 @@
  */
 package hoot.services;
 
-import java.io.IOException;
+import static hoot.services.HootProperties.*;
+
+import java.io.File;
 
 import javax.servlet.ServletContextEvent;
 import javax.servlet.ServletContextListener;
 
+import org.apache.commons.io.FileUtils;
 import org.slf4j.bridge.SLF4JBridgeHandler;
 
-import hoot.services.controllers.ingest.BasemapResource;
-import hoot.services.controllers.ogr.TranslatorResource;
-import hoot.services.controllers.services.P2PResource;
+import hoot.services.controllers.auxiliaryservices.POI2POIMergeServiceResource;
+import hoot.services.controllers.auxiliaryservices.TranslationServiceResource;
 
 
 public class HootServletContext implements ServletContextListener {
 
-    private TranslatorResource transRes;
-    private P2PResource p2PRes;
-
     @Override
     public void contextInitialized(ServletContextEvent sce) {
-        transRes = new TranslatorResource();
-        transRes.startTranslationService();
-
-        p2PRes = new P2PResource();
-        p2PRes.startP2PService();
-
-        // Doing this to make sure we create ingest folder
-        try {
-            BasemapResource.createTileServerPath();
-        }
-        catch (IOException ioe) {
-            throw new RuntimeException("Error creating tile server path!", ioe);
-        }
-
         // Bridge/route all JUL log records to the SLF4J API.
         // Some third-party components use Java Util Logging (JUL). We want to
         // route those calls through SLF4J.
         initSLF4JBridgeHandler();
 
         HootProperties.init();
+
+        createIngestFolder();
+
+        createUploadFolder();
+
+        TranslationServiceResource.startTranslationService();
+
+        POI2POIMergeServiceResource.startP2PService();
+    }
+
+    @Override
+    public void contextDestroyed(ServletContextEvent sce) {
+        TranslationServiceResource.stopTranslationService();
+
+        POI2POIMergeServiceResource.stopP2PService();
+
+        FileUtils.deleteQuietly(new File(TEMP_OUTPUT_PATH));
     }
 
     private static void initSLF4JBridgeHandler() {
@@ -76,9 +78,21 @@ public class HootServletContext implements ServletContextListener {
         SLF4JBridgeHandler.install();
     }
 
-    @Override
-    public void contextDestroyed(ServletContextEvent sce) {
-        TranslatorResource.stopTranslationService();
-        p2PRes.stopP2PService();
+    private static void createIngestFolder() {
+        File ingestFolder = new File(TILE_SERVER_PATH);
+        if (!ingestFolder.exists()) {
+            if (!ingestFolder.mkdir()) {
+                throw new RuntimeException("Error creating " + ingestFolder.getAbsolutePath() + " directory!");
+            }
+        }
+    }
+
+    private static void createUploadFolder() {
+        File uploadDir = new File(UPLOAD_FOLDER);
+        if (!uploadDir.exists()) {
+            if (!uploadDir.mkdir()) {
+                throw new RuntimeException("Error creating " + uploadDir.getAbsolutePath() + " directory!");
+            }
+        }
     }
 }

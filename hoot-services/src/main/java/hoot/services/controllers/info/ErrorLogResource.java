@@ -26,13 +26,17 @@
  */
 package hoot.services.controllers.info;
 
+import static hoot.services.HootProperties.ERROR_LOG_PATH;
+import static hoot.services.HootProperties.TEMP_OUTPUT_PATH;
+
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.UUID;
 
-import javax.annotation.PreDestroy;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
@@ -40,29 +44,26 @@ import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.ResponseBuilder;
-import javax.ws.rs.core.Response.Status;
 
-import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.json.simple.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Controller;
 
 
+@Controller
 @Path("/logging")
 public class ErrorLogResource {
     private static final Logger logger = LoggerFactory.getLogger(ErrorLogResource.class);
 
-    private String exportLogPath;
+    @Autowired
+    private AboutResource aboutResource;
 
-    public ErrorLogResource() {
-    }
 
-    @PreDestroy
-    public void preDestroy() throws IOException {
-        if ((exportLogPath != null) && (!exportLogPath.isEmpty())) {
-            FileUtils.forceDelete(new File(exportLogPath));
-        }
-    }
+    public ErrorLogResource() {}
+
 
     /**
      * Service method endpoint for retrieving the Hootenanny tomcat logger.
@@ -73,22 +74,22 @@ public class ErrorLogResource {
      */
     @GET
     @Path("/debuglog")
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response getDebugLog() {
-        String logStr;
+        String errorLog;
         try {
             // 50k Length
-            logStr = ErrorLog.getErrorlog(50000);
+            errorLog = getErrorLog(50000);
         }
-        catch (Exception ex) {
-            String message = "Error getting error logger: " + ex;
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(message).build());
+        catch (Exception e) {
+            String msg = "Error getting error log: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(msg).build());
         }
 
-        JSONObject res = new JSONObject();
-        res.put("logger", logStr);
+        JSONObject entity = new JSONObject();
+        entity.put("logger", errorLog);
 
-        return Response.ok(res.toJSONString(), MediaType.APPLICATION_JSON).build();
+        return Response.ok(entity.toJSONString()).build();
     }
 
     /**
@@ -103,23 +104,71 @@ public class ErrorLogResource {
     @Produces(MediaType.APPLICATION_OCTET_STREAM)
     public Response exportLog() {
         File out;
+
         try {
-            String outputPath = ErrorLog.generateExportLog();
+            String outputPath = generateExportLog();
             out = new File(outputPath);
-            exportLogPath = outputPath;
         }
-        catch (Exception ex) {
-            String message = "Error exporting logger file: " + ex;
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(message).build());
+        catch (Exception e) {
+            String message = "Error exporting log file!  Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(message).build());
         }
 
         DateFormat dateFormat = new SimpleDateFormat("yyyyMMddHHmmss");
         Date date = new Date();
         String dtStr = dateFormat.format(date);
 
-        ResponseBuilder rBuild = Response.ok(out, MediaType.APPLICATION_OCTET_STREAM);
-        rBuild.header("Content-Disposition", "attachment; filename=hootlog_" + dtStr + ".logger");
+        ResponseBuilder responseBuilder = Response.ok(out);
+        responseBuilder.header("Content-Disposition", "attachment; filename=hootlog_" + dtStr + ".logger");
 
-        return rBuild.build();
+        return responseBuilder.build();
+    }
+
+    private static String getErrorLog(int maxLength) throws IOException {
+        try (RandomAccessFile file = new RandomAccessFile(new File(ERROR_LOG_PATH), "r")) {
+            long fileLength = file.length();
+
+            long startOffset = 0;
+            if (fileLength > maxLength) {
+                startOffset = fileLength - maxLength;
+            }
+
+            file.seek(startOffset);
+
+            byte[] buffer = new byte[maxLength];
+            file.read(buffer, 0, maxLength);
+
+            return new String(buffer);
+        }
+    }
+
+    private String generateExportLog() throws IOException {
+        UUID uuid = UUID.randomUUID();
+
+        VersionInfo versionInfo = this.aboutResource.getCoreVersionInfo();
+        String data = System.lineSeparator() + "************ CORE VERSION INFO ***********" + System.lineSeparator();
+        data += versionInfo.toString();
+
+        CoreDetail coreDetail = this.aboutResource.getCoreVersionDetail();
+        data += System.lineSeparator() + "************ CORE ENVIRONMENT ***********" + System.lineSeparator();
+
+        if (coreDetail != null) {
+            data += StringUtils.join(coreDetail.getEnvironmentInfo(), System.lineSeparator());
+        }
+
+        data += System.lineSeparator() + "************ SERVICE VERSION INFO ***********" + System.lineSeparator();
+        data += this.aboutResource.getServicesVersionInfo().toString();
+        data += System.lineSeparator() + "************ CATALINA LOG ***********" + System.lineSeparator();
+
+        // 5MB Max
+        int maxSize = 5000000;
+
+        String logStr = getErrorLog(maxSize);
+
+        String outputPath = TEMP_OUTPUT_PATH + File.separator + uuid;
+        try (RandomAccessFile raf = new RandomAccessFile(outputPath, "rw")) {
+            raf.writeBytes(data + System.lineSeparator() + logStr);
+            return outputPath;
+        }
     }
 }

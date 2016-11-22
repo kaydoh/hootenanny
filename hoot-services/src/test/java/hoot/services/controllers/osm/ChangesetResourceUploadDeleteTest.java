@@ -26,796 +26,723 @@
  */
 package hoot.services.controllers.osm;
 
+import static com.querydsl.core.group.GroupBy.groupBy;
 import static hoot.services.HootProperties.CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES;
+import static hoot.services.controllers.osm.OSMTestUtils.insertNew;
+import static hoot.services.models.db.QChangesets.changesets;
+import static hoot.services.models.db.QCurrentNodes.currentNodes;
+import static hoot.services.models.db.QCurrentRelationMembers.currentRelationMembers;
+import static hoot.services.models.db.QCurrentRelations.currentRelations;
+import static hoot.services.models.db.QCurrentWayNodes.currentWayNodes;
+import static hoot.services.models.db.QCurrentWays.currentWays;
+import static hoot.services.utils.DbUtils.createQuery;
+import static org.junit.Assert.*;
 
 import java.sql.Timestamp;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import javax.ws.rs.BadRequestException;
+import javax.ws.rs.ClientErrorException;
+import javax.ws.rs.NotFoundException;
+import javax.ws.rs.client.Entity;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 import javax.xml.xpath.XPath;
-import javax.xml.xpath.XPathExpressionException;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.xpath.XPathAPI;
-import org.junit.Assert;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.postgresql.util.PGobject;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.NodeList;
 
-import com.mysema.query.sql.SQLQuery;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.ClientResponse.Status;
-import com.sun.jersey.api.client.UniformInterfaceException;
-
 import hoot.services.UnitTest;
-import hoot.services.utils.DbUtils;
-import hoot.services.utils.PostgresUtils;
-import hoot.services.db2.Changesets;
-import hoot.services.db2.CurrentNodes;
-import hoot.services.db2.CurrentRelationMembers;
-import hoot.services.db2.CurrentRelations;
-import hoot.services.db2.CurrentWayNodes;
-import hoot.services.db2.CurrentWays;
-import hoot.services.db2.QChangesets;
-import hoot.services.db2.QCurrentNodes;
-import hoot.services.db2.QCurrentRelationMembers;
-import hoot.services.db2.QCurrentRelations;
-import hoot.services.db2.QCurrentWayNodes;
-import hoot.services.db2.QCurrentWays;
 import hoot.services.geo.BoundingBox;
+import hoot.services.models.db.Changesets;
+import hoot.services.models.db.CurrentNodes;
+import hoot.services.models.db.CurrentRelationMembers;
+import hoot.services.models.db.CurrentRelations;
+import hoot.services.models.db.CurrentWayNodes;
+import hoot.services.models.db.CurrentWays;
 import hoot.services.models.osm.Changeset;
 import hoot.services.models.osm.Element.ElementType;
-import hoot.services.models.osm.Node;
 import hoot.services.models.osm.RelationMember;
-import hoot.services.osm.OsmResourceTestAbstract;
-import hoot.services.osm.OsmTestUtils;
+import hoot.services.utils.DbUtils;
+import hoot.services.utils.PostgresUtils;
 import hoot.services.utils.QuadTileCalculator;
 import hoot.services.utils.XmlUtils;
 
 
-public class ChangesetResourceUploadDeleteTest extends OsmResourceTestAbstract {
-    private static final Logger log = LoggerFactory.getLogger(ChangesetResourceUploadDeleteTest.class);
-
-    private final QCurrentNodes currentNodesTbl = QCurrentNodes.currentNodes;
-    private final QCurrentWays currentWaysTbl = QCurrentWays.currentWays;
-    private final QCurrentWayNodes currentWayNodesTbl = QCurrentWayNodes.currentWayNodes;
-    private final QCurrentRelations currentRelationsTbl = QCurrentRelations.currentRelations;
-    private final QCurrentRelationMembers currentRelationMembersTbl = QCurrentRelationMembers.currentRelationMembers;
-
-    public ChangesetResourceUploadDeleteTest() {
-        super("hoot.services.controllers.osm");
-    }
+public class ChangesetResourceUploadDeleteTest extends OSMResourceTestAbstract {
 
     private void testUploadDelete(String request, BoundingBox originalBounds, long changesetId, Long[] nodeIdsArr,
             Long[] wayIdsArr, Long[] relationIdsArr) throws Exception {
-        try {
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", "" + mapId)
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class, request);
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(request, MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(1, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                // check that the returned IDs are correct and the correct
-                // attributes were returned
-                Assert.assertEquals((long) nodeIdsArr[3],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(1, returnedNodes.getLength());
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(1, returnedWays.getLength());
+        // check that the returned IDs are correct and the correct
+        // attributes were returned
+        assertEquals((long) nodeIdsArr[3],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                Assert.assertEquals((long) wayIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(1, returnedWays.getLength());
 
-                NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
-                Assert.assertEquals(1, returnedRelations.getLength());
+        assertEquals((long) wayIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                Assert.assertEquals((long) relationIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
+        assertEquals(1, returnedRelations.getLength());
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
+        assertEquals((long) relationIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                    .from(changesets)
-                    .where(changesets.id.eq(changesetId))
-                    .singleResult(changesets);
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .map(currentNodesTbl.id, currentNodesTbl);
+        Timestamp now = super.getCurrentDBTime();
 
-                Assert.assertEquals(4, nodes.size());
+        /*
+        Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
+                    .from(currentNodesTbl)
+                    .map(currentNodesTbl.id, currentNodesTbl);
+         */
+        Map<Long, CurrentNodes> nodes = createQuery(mapId)
+                .from(currentNodes)
+                .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[0], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        assertEquals(4, nodes.size());
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[1], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[0], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[1]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[1], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                nodeRecord = nodes.get(nodeIdsArr[4]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[4], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 4", tags.get("key 4"));
+        nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                // verify the deleted node
-                nodeRecord = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .where(currentNodesTbl.id.eq(nodeIdsArr[3]))
-                        .singleResult(currentNodesTbl);
-                Assert.assertNull(nodeRecord);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        nodeRecord = nodes.get(nodeIdsArr[4]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[4], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 4", tags.get("key 4"));
 
-            try {
-                final Map<Long, CurrentWays> ways = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl).map(currentWaysTbl.id, currentWaysTbl);
+        // verify the deleted node
+        nodeRecord = createQuery(mapId)
+                .select(currentNodes)
+                .from(currentNodes)
+                .where(currentNodes.id.eq(nodeIdsArr[3]))
+                .fetchOne();
 
-                Assert.assertEquals(2, ways.size());
+        assertNull(nodeRecord);
 
-                CurrentWays wayRecord = ways.get(wayIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[0], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
-                List<CurrentWayNodes> wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[0]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
-                Assert.assertEquals(3, wayNodes.size());
-                CurrentWayNodes wayNode = wayNodes.get(0);
-                Assert.assertEquals(nodeIdsArr[0], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(1);
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(2);
-                Assert.assertEquals(nodeIdsArr[4], wayNode.getNodeId());
-                Assert.assertEquals(new Long(3), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) wayRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        Map<Long, CurrentWays> ways = createQuery(mapId)
+                .from(currentWays)
+                .transform(groupBy(currentWays.id).as(currentWays));
 
-                wayRecord = ways.get(wayIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[1], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
-                wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[1]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
-                Assert.assertEquals(2, wayNodes.size());
-                wayNode = wayNodes.get(0);
-                Assert.assertEquals(nodeIdsArr[2], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(1);
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                // verify the way with no tags
-                Assert.assertTrue((wayRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) wayRecord.getTags()).getValue()));
+        assertEquals(2, ways.size());
 
-                // verify the deleted way
-                Assert.assertNull(new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl)
-                        .where(currentWaysTbl.id.eq(wayIdsArr[2]))
-                        .singleResult(currentWaysTbl));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking ways: " + e.getMessage());
-            }
+        CurrentWays wayRecord = ways.get(wayIdsArr[0]);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[0], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-            try {
-                Map<Long, CurrentRelations> relations = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .map(currentRelationsTbl.id, currentRelationsTbl);
+        List<CurrentWayNodes> wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[0]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                Assert.assertEquals(3, relations.size());
+        assertEquals(3, wayNodes.size());
+        CurrentWayNodes wayNode = wayNodes.get(0);
+        assertEquals(nodeIdsArr[0], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(2);
+        assertEquals(nodeIdsArr[4], wayNode.getNodeId());
+        assertEquals(new Long(3), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                // verify the previously existing relations
-                CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[0], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        // verify the previously existing tags
+        tags = PostgresUtils.postgresObjToHStore(wayRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                List<CurrentRelationMembers> members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[0]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        wayRecord = ways.get(wayIdsArr[1]);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[1], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                Assert.assertEquals(4, members.size());
-                CurrentRelationMembers member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        wayNodes = createQuery(mapId)
+                .from(currentWayNodes)
+                .select(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[1]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                Assert.assertEquals(nodeIdsArr[0], member.getMemberId());
-                member = members.get(1);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role3", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        assertEquals(2, wayNodes.size());
+        wayNode = wayNodes.get(0);
+        assertEquals(nodeIdsArr[2], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                Assert.assertEquals(wayIdsArr[1], member.getMemberId());
-                member = members.get(2);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role2", member.getMemberRole());
-                Assert.assertEquals(new Integer(3), member.getSequenceId());
+        // verify the way with no tags
+        assertTrue((wayRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(wayRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(wayIdsArr[0], member.getMemberId());
-                member = members.get(3);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(4), member.getSequenceId());
+        // verify the deleted way
+        assertEquals(0L, createQuery(mapId)
+                .from(currentWays)
+                .where(currentWays.id.eq(wayIdsArr[2]))
+                .fetchCount());
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
+        Map<Long, CurrentRelations> relations =
+                createQuery(mapId)
+                        .from(currentRelations)
+                        .transform(groupBy(currentRelations.id).as(currentRelations));
 
-                relationRecord = relations.get(relationIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[1], relationRecord.getId());
+        assertEquals(3, relations.size());
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        // verify the previously existing relations
+        CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[0], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[1]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        List<CurrentRelationMembers> members =
+                createQuery(mapId)
+                        .select(currentRelationMembers)
+                        .from(currentRelationMembers)
+                        .where(currentRelationMembers.relationId.eq(relationIdsArr[0]))
+                        .orderBy(currentRelationMembers.sequenceId.asc())
+                        .fetch();
 
-                Assert.assertEquals(2, members.size());
-                member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(4, members.size());
+        CurrentRelationMembers member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                Assert.assertEquals(nodeIdsArr[4], member.getMemberId());
-                member = members.get(1);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        assertEquals(nodeIdsArr[0], member.getMemberId());
+        member = members.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role3", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
 
-                Assert.assertEquals(relationIdsArr[0], member.getMemberId());
-                tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 2", tags.get("key 2"));
-                Assert.assertEquals("val 3", tags.get("key 3"));
+        assertEquals(wayIdsArr[1], member.getMemberId());
+        member = members.get(2);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role2", member.getMemberRole());
+        assertEquals(new Integer(3), member.getSequenceId());
 
-                relationRecord = relations.get(relationIdsArr[3]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[3], relationRecord.getId());
+        assertEquals(wayIdsArr[0], member.getMemberId());
+        member = members.get(3);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("", member.getMemberRole());
+        assertEquals(new Integer(4), member.getSequenceId());
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        assertEquals(nodeIdsArr[2], member.getMemberId());
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[3]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        // verify the previously existing tags
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
 
-                Assert.assertEquals(1, members.size());
-                member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        relationRecord = relations.get(relationIdsArr[1]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[1], relationRecord.getId());
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                // verify the deleted relation
-                Assert.assertNull(
-                        new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                                .from(currentRelationsTbl)
-                                .where(currentRelationsTbl.id.eq(relationIdsArr[2]))
-                                .singleResult(currentRelationsTbl));
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[1]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                // verify tags that should no longer exist
-                Assert.assertTrue((relationRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) relationRecord.getTags()).getValue()));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking relations: " + e.getMessage());
-            }
+        assertEquals(2, members.size());
+        member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        assertEquals(nodeIdsArr[4], member.getMemberId());
+        member = members.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(15), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertEquals(relationIdsArr[0], member.getMemberId());
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 2", tags.get("key 2"));
+        assertEquals("val 3", tags.get("key 3"));
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        relationRecord = relations.get(relationIdsArr[3]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[3], relationRecord.getId());
+
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
+
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[3]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
+
+        assertEquals(1, members.size());
+        member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+
+        assertEquals(nodeIdsArr[2], member.getMemberId());
+
+        // verify the deleted relation
+        assertNull(
+                createQuery(mapId)
+                        .select(currentRelations)
+                        .from(currentRelations)
+                        .where(currentRelations.id.eq(relationIdsArr[2]))
+                        .fetchOne());
+
+        // verify tags that should no longer exist
+        assertTrue((relationRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(relationRecord.getTags()).isEmpty());
+
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
+
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(15), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDelete() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Now, delete one of the nodes, one of the ways, and one of the relations.
         testUploadDelete(
-                "<osmChange version=\"0.3\" generator=\"iD\">" +
-                    "<create/>" +
-                    "<modify/>" +
-                    "<delete if-unused=\"true\">" +
-                        "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
-                            "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                        "</node>" +
-                        "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                            "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                            "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                        "</way>" +
-                        "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
-                            "<tag k=\"key 4\" v=\"val 4\"></tag>" +
-                        "</relation>" +
-                    "</delete>" +
-                "</osmChange>",
-                originalBounds, changesetId, nodeIdsArr, wayIdsArr, relationIdsArr);
+            "<osmChange version=\"0.3\" generator=\"iD\">" +
+                "<create/>" +
+                "<modify/>" +
+                "<delete if-unused=\"true\">" +
+                    "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
+                        "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                    "</node>" +
+                    "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                        "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                        "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                    "</way>" +
+                    "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
+                        "<tag k=\"key 4\" v=\"val 4\"></tag>" +
+                    "</relation>" +
+                "</delete>" +
+            "</osmChange>",
+            originalBounds, changesetId, nodeIdsArr, wayIdsArr, relationIdsArr);
     }
 
     // This test comes from direct experience calling the services from the iD editor.
     @Test
     @Category(UnitTest.class)
     public void testUploadDelete2() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds, 8);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds, 8);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
 
-            // Now delete two of the nodes, where ways are specified in the
-            // modify portion of the request before the nodes.
-            Document responseData = null;
-            try {
-                responseData = resource().path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<way id=\"" + wayIdsArr[0] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                        "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                        "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                        "<nd ref=\"" + nodeIdsArr[4] + "\"></nd>" +
-                                    "</way>" +
-                                    "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() + "\" lat=\"" +
-                                        originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                    "</node>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // Now delete two of the nodes, where ways are specified in the
+        // modify portion of the request before the nodes.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<way id=\"" + wayIdsArr[0] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                            "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                            "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                            "<nd ref=\"" + nodeIdsArr[4] + "\"></nd>" +
+                        "</way>" +
+                        "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() + "\" lat=\"" +
+                            originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "</node>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(1, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                // check that the returned IDs are correct and the correct attributes were returned
-                Assert.assertEquals((long) nodeIdsArr[4],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(1, returnedNodes.getLength());
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                    .from(changesets)
-                    .where(changesets.id.eq(changesetId))
-                    .singleResult(changesets);
+        // check that the returned IDs are correct and the correct attributes were returned
+        assertEquals((long) nodeIdsArr[4],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl).map(currentNodesTbl.id, currentNodesTbl);
+        Timestamp now = super.getCurrentDBTime();
 
-                Assert.assertEquals(4, nodes.size());
+        Map<Long, CurrentNodes> nodes =
+                createQuery(mapId)
+                        .from(currentNodes)
+                        .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        assertEquals(4, nodes.size());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[0], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
 
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[0], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double((originalBounds.getMaxLat())), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double((originalBounds.getMaxLon())), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[1], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[1]);
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double((originalBounds.getMaxLat())), nodeRecord.getLatitude());
+        assertEquals(new Double((originalBounds.getMaxLon())), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[1], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertEquals(true, nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[2]);
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertEquals(true, nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[2]);
 
-                nodeRecord = nodes.get(nodeIdsArr[3]);
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[3], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        nodeRecord = nodes.get(nodeIdsArr[3]);
 
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[3], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 3", tags.get("key 3"));
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-                // verify the deleted node
-                nodeRecord = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .where(currentNodesTbl.id.eq(nodeIdsArr[4]))
-                        .singleResult(currentNodesTbl);
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 3", tags.get("key 3"));
 
-                Assert.assertNull(nodeRecord);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        // verify the deleted node
+        nodeRecord = createQuery(mapId)
+                .select(currentNodes)
+                .from(currentNodes)
+                .where(currentNodes.id.eq(nodeIdsArr[4]))
+                .fetchOne();
 
-            try {
-                Map<Long, CurrentWays> ways = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentWaysTbl)
-                        .map(currentWaysTbl.id, currentWaysTbl);
+        assertNull(nodeRecord);
 
-                Assert.assertEquals(2, ways.size());
+        Map<Long, CurrentWays> ways = createQuery(mapId)
+                .from(currentWays)
+                .transform(groupBy(currentWays.id).as(currentWays));
 
-                CurrentWays wayRecord = ways.get(wayIdsArr[1]);
+        assertEquals(2, ways.size());
 
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[1], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
+        CurrentWays wayRecord = ways.get(wayIdsArr[1]);
 
-                List<CurrentWayNodes> wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[1]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[1], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                Assert.assertEquals(2, wayNodes.size());
+        List<CurrentWayNodes> wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[1]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                CurrentWayNodes wayNode = wayNodes.get(0);
+        assertEquals(2, wayNodes.size());
 
-                Assert.assertEquals(nodeIdsArr[2], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+        CurrentWayNodes wayNode = wayNodes.get(0);
 
-                wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[2], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
 
-                // verify the way with no tags
-                Assert.assertTrue((wayRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) wayRecord.getTags()).getValue()));
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                wayRecord = ways.get(wayIdsArr[2]);
+        // verify the way with no tags
+        assertTrue((wayRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(wayRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[2], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
+        wayRecord = ways.get(wayIdsArr[2]);
 
-                wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[2]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[2], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                Assert.assertEquals(2, wayNodes.size());
+        wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[2]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                wayNode = wayNodes.get(0);
+        assertEquals(2, wayNodes.size());
 
-                Assert.assertEquals(nodeIdsArr[0], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(0);
 
-                wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[0], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
 
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) wayRecord.getTags());
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 3", tags.get("key 3"));
+        // verify the previously existing tags
+        tags = PostgresUtils.postgresObjToHStore(wayRecord.getTags());
 
-                // verify the deleted way
-                Assert.assertNull(new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl)
-                        .where(currentWaysTbl.id.eq(wayIdsArr[0]))
-                        .singleResult(currentWaysTbl));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking ways: " + e.getMessage());
-            }
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 3", tags.get("key 3"));
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        // verify the deleted way
+        assertNull(createQuery(mapId)
+                .select(currentWays)
+                .from(currentWays)
+                .where(currentWays.id.eq(wayIdsArr[0]))
+                .fetchOne());
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(10), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(10), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = BadRequestException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteNoNodeCoords() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         try {
             // Now, delete one of the nodes, one of the ways, and one of the
             // relations. An error should be returned and no data in the system deleted, since we require
             // passing in nodes with their coords...even for a delete.
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<node id=\"" + nodeIdsArr[3] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                    "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                                "</node>" +
-                                "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                    "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                    "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                    "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                                "</way>" +
-                                "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                    "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
-                                    "<tag k=\"key 4\" v=\"val 4\"></tag>" +
-                                "</relation>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<node id=\"" + nodeIdsArr[3] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                                "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                            "</node>" +
+                            "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                                "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                                "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                                "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                            "</way>" +
+                            "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                                "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
+                                "<tag k=\"key 4\" v=\"val 4\"></tag>" +
+                            "</relation>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.BAD_REQUEST, Status.fromStatusCode(r.getStatus()));
-            // Assert.assertTrue(
-            // r.getEntity(String.class).contains("Element(s) being referenced
-            // don't exist."));
-
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
+        catch (BadRequestException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.BAD_REQUEST, Response.Status.fromStatusCode(r.getStatus()));
+            //OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
@@ -823,463 +750,428 @@ public class ChangesetResourceUploadDeleteTest extends OsmResourceTestAbstract {
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteNoWayNodes() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Now, delete one of the nodes, one of the ways, and one of the relations.
         testUploadDelete(
-                "<osmChange version=\"0.3\" generator=\"iD\">" +
-                    "<create/>" +
-                    "<modify/>" +
-                    "<delete if-unused=\"true\">" +
-                        "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
-                             "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" +
-                                changesetId + "\">" +
-                            "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                        "</node>" +
-                        "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<tag k=\"key 1\" v=\"val 1\"></tag>" + "</way>" + "<relation id=\"" + relationIdsArr[2] +
-                                   "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
-                            "<tag k=\"key 4\" v=\"val 4\"></tag>" +
-                        "</relation>" +
-                    "</delete>" +
-                "</osmChange>",
-                originalBounds, changesetId, nodeIdsArr, wayIdsArr, relationIdsArr);
+            "<osmChange version=\"0.3\" generator=\"iD\">" +
+                "<create/>" +
+                "<modify/>" +
+                "<delete if-unused=\"true\">" +
+                    "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
+                         "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" +
+                            changesetId + "\">" +
+                        "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                    "</node>" +
+                    "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<tag k=\"key 1\" v=\"val 1\"></tag>" + "</way>" + "<relation id=\"" + relationIdsArr[2] +
+                               "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
+                        "<tag k=\"key 4\" v=\"val 4\"></tag>" +
+                    "</relation>" +
+                "</delete>" +
+            "</osmChange>",
+            originalBounds, changesetId, nodeIdsArr, wayIdsArr, relationIdsArr);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteNoRelationMembers() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Now, delete one of the nodes, one of the ways, and one of the
         // relations.
         testUploadDelete(
-                "<osmChange version=\"0.3\" generator=\"iD\">" +
-                    "<create/>" +
-                    "<modify/>" +
-                    "<delete if-unused=\"true\">" +
-                        "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" lat=\"" +
-                            originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                        "</node>" +
-                        "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                            "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                            "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                        "</way>" +
-                        "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                            "<tag k=\"key 4\" v=\"val 4\"></tag>" +
-                        "</relation>" +
-                    "</delete>" +
-                "</osmChange>",
-                originalBounds, changesetId, nodeIdsArr, wayIdsArr, relationIdsArr);
+            "<osmChange version=\"0.3\" generator=\"iD\">" +
+                "<create/>" +
+                "<modify/>" +
+                "<delete if-unused=\"true\">" +
+                    "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" lat=\"" +
+                        originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                    "</node>" +
+                    "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                        "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                        "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                    "</way>" +
+                    "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "<tag k=\"key 4\" v=\"val 4\"></tag>" +
+                    "</relation>" +
+                "</delete>" +
+            "</osmChange>",
+            originalBounds, changesetId, nodeIdsArr, wayIdsArr, relationIdsArr);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteRelationContainsAnotherRelation() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-            Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
-            Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
-            // now delete one of the nodes, one of the ways, and one of the relations
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
-                                         "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
-                                         // i don't understand why you would ever put these tags here at all
-                                         // if you're going to delete the nodes, which will automatically cause the
-                                         // tags to be deleted too (according to the rails port code)
-                                        "changeset=\"" + changesetId + "\">" +
-                                        "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                                    "</node>" +
-                                    "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                        "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                        "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                        "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                                    "</way>" +
-                                    "<relation id=\"" + relationIdsArr[1] + "\" version=\"1\" " + "changeset=\""
-                                        + changesetId + "\">" +
-                                    "</relation>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // now delete one of the nodes, one of the ways, and one of the relations
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
+                                 "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
+                                 // i don't understand why you would ever put these tags here at all
+                                 // if you're going to delete the nodes, which will automatically cause the
+                                 // tags to be deleted too (according to the rails port code)
+                                "changeset=\"" + changesetId + "\">" +
+                                "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                            "</node>" +
+                            "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                                "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                                "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                                "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                            "</way>" +
+                            "<relation id=\"" + relationIdsArr[1] + "\" version=\"1\" " + "changeset=\""
+                                + changesetId + "\">" +
+                            "</relation>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(1, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                // check that the returned IDs are correct and the correct attributes were returned
-                Assert.assertEquals((long) nodeIdsArr[3],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(1, returnedNodes.getLength());
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(1, returnedWays.getLength());
+        // check that the returned IDs are correct and the correct attributes were returned
+        assertEquals((long) nodeIdsArr[3],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                Assert.assertEquals((long) wayIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(1, returnedWays.getLength());
 
-                NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
-                Assert.assertEquals(1, returnedRelations.getLength());
+        assertEquals((long) wayIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                Assert.assertEquals((long) relationIdsArr[1],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
+        assertEquals(1, returnedRelations.getLength());
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                    .from(changesets)
-                    .where(changesets.id.eq(changesetId))
-                    .singleResult(changesets);
+        assertEquals((long) relationIdsArr[1],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .map(currentNodesTbl.id, currentNodesTbl);
-                Assert.assertEquals(4, nodes.size());
+        Timestamp now = super.getCurrentDBTime();
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[0], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        Map<Long, CurrentNodes> nodes = createQuery(mapId)
+                .from(currentNodes)
+                .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[1], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        assertEquals(4, nodes.size());
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[0], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                nodeRecord = nodes.get(nodeIdsArr[4]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[4], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 4", tags.get("key 4"));
+        nodeRecord = nodes.get(nodeIdsArr[1]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[1], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null) || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                // verify the deleted node
-                nodeRecord = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentNodesTbl)
-                        .where(currentNodesTbl.id.eq(nodeIdsArr[3])).singleResult(currentNodesTbl);
-                Assert.assertNull(nodeRecord);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null) || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-            try {
-                Map<Long, CurrentWays> ways = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl)
-                        .map(currentWaysTbl.id, currentWaysTbl);
+        nodeRecord = nodes.get(nodeIdsArr[4]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[4], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 4", tags.get("key 4"));
 
-                Assert.assertEquals(2, ways.size());
+        // verify the deleted node
+        nodeRecord = createQuery(mapId)
+                .select(currentNodes)
+                .from(currentNodes)
+                .where(currentNodes.id.eq(nodeIdsArr[3]))
+                .fetchOne();
 
-                CurrentWays wayRecord = ways.get(wayIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[0], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
+        assertNull(nodeRecord);
 
-                List<CurrentWayNodes> wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[0]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
+        Map<Long, CurrentWays> ways = createQuery(mapId)
+                .from(currentWays)
+                .transform(groupBy(currentWays.id).as(currentWays));
 
-                Assert.assertEquals(3, wayNodes.size());
-                CurrentWayNodes wayNode = wayNodes.get(0);
-                Assert.assertEquals(nodeIdsArr[0], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(1);
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(2);
-                Assert.assertEquals(nodeIdsArr[4], wayNode.getNodeId());
-                Assert.assertEquals(new Long(3), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) wayRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        assertEquals(2, ways.size());
 
-                wayRecord = ways.get(wayIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[1], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
+        CurrentWays wayRecord = ways.get(wayIdsArr[0]);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[0], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[1]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
+        List<CurrentWayNodes> wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[0]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                Assert.assertEquals(2, wayNodes.size());
-                wayNode = wayNodes.get(0);
-                Assert.assertEquals(nodeIdsArr[2], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(1);
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                // verify the way with no tags
-                Assert.assertTrue((wayRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) wayRecord.getTags()).getValue()));
+        assertEquals(3, wayNodes.size());
+        CurrentWayNodes wayNode = wayNodes.get(0);
+        assertEquals(nodeIdsArr[0], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(2);
+        assertEquals(nodeIdsArr[4], wayNode.getNodeId());
+        assertEquals(new Long(3), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        // verify the previously existing tags
 
-                // verify the deleted way
-                Assert.assertNull(new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl)
-                        .where(currentWaysTbl.id.eq(wayIdsArr[2]))
-                        .singleResult(currentWaysTbl));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking ways: " + e.getMessage());
-            }
+        tags = PostgresUtils.postgresObjToHStore(wayRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-            try {
-                Map<Long, CurrentRelations> relations = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .map(currentRelationsTbl.id, currentRelationsTbl);
+        wayRecord = ways.get(wayIdsArr[1]);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[1], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                Assert.assertEquals(3, relations.size());
+        wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[1]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                // verify the previously existing relations
-                CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[0], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        assertEquals(2, wayNodes.size());
+        wayNode = wayNodes.get(0);
+        assertEquals(nodeIdsArr[2], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                List<CurrentRelationMembers> members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[0]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc()).list(currentRelationMembersTbl);
+        // verify the way with no tags
+        assertTrue((wayRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(wayRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(4, members.size());
-                CurrentRelationMembers member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        // verify the deleted way
+        assertNull(createQuery(mapId)
+                .select(currentWays)
+                .from(currentWays)
+                .where(currentWays.id.eq(wayIdsArr[2]))
+                .fetchOne());
 
-                Assert.assertEquals(nodeIdsArr[0], member.getMemberId());
-                member = members.get(1);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role3", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        Map<Long, CurrentRelations> relations = createQuery(mapId)
+                .from(currentRelations)
+                .transform(groupBy(currentRelations.id).as(currentRelations));
 
-                Assert.assertEquals(wayIdsArr[1], member.getMemberId());
-                member = members.get(2);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role2", member.getMemberRole());
-                Assert.assertEquals(new Integer(3), member.getSequenceId());
+        assertEquals(3, relations.size());
 
-                Assert.assertEquals(wayIdsArr[0], member.getMemberId());
-                member = members.get(3);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(4), member.getSequenceId());
+        // verify the previously existing relations
+        CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[0], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
+        List<CurrentRelationMembers> members =
+                createQuery(mapId)
+                        .select(currentRelationMembers)
+                        .from(currentRelationMembers)
+                        .where(currentRelationMembers.relationId.eq(relationIdsArr[0]))
+                        .orderBy(currentRelationMembers.sequenceId.asc())
+                        .fetch();
 
-                relationRecord = relations.get(relationIdsArr[2]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[2], relationRecord.getId());
+        assertEquals(4, members.size());
+        CurrentRelationMembers member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        assertEquals(nodeIdsArr[0], member.getMemberId());
+        member = members.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role3", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[2]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        assertEquals(wayIdsArr[1], member.getMemberId());
+        member = members.get(2);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role2", member.getMemberRole());
+        assertEquals(new Integer(3), member.getSequenceId());
 
-                Assert.assertEquals(1, members.size());
-                member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(wayIdsArr[0], member.getMemberId());
+        member = members.get(3);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("", member.getMemberRole());
+        assertEquals(new Integer(4), member.getSequenceId());
 
-                Assert.assertEquals(wayIdsArr[1], member.getMemberId());
-                tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 4", tags.get("key 4"));
+        assertEquals(nodeIdsArr[2], member.getMemberId());
+        // verify the previously existing tags
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
 
-                relationRecord = relations.get(relationIdsArr[3]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[3], relationRecord.getId());
+        relationRecord = relations.get(relationIdsArr[2]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[2], relationRecord.getId());
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[3]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[2]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                Assert.assertEquals(1, members.size());
-                member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(1, members.size());
+        member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-                Assert.assertTrue((relationRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) relationRecord.getTags()).getValue()));
+        assertEquals(wayIdsArr[1], member.getMemberId());
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 4", tags.get("key 4"));
 
-                // verify the deleted relation
-                Assert.assertNull(new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .where(currentRelationsTbl.id.eq(relationIdsArr[1]))
-                        .singleResult(currentRelationsTbl)
+        relationRecord = relations.get(relationIdsArr[3]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[3], relationRecord.getId());
 
-                );
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking relations: " + e.getMessage());
-            }
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-            try {
-                // changeset = changesetDao.findById(changesetId);
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[3]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(1, members.size());
+        member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                Assert.assertEquals(new Integer(15), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertEquals(nodeIdsArr[2], member.getMemberId());
+        assertTrue((relationRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(relationRecord.getTags()).isEmpty());
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        // verify the deleted relation
+        assertNull(createQuery(mapId)
+                .select(currentRelations)
+                .from(currentRelations)
+                .where(currentRelations.id.eq(relationIdsArr[1]))
+                .fetchOne());
+
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
+
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+
+        assertEquals(new Integer(15), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
     /**
@@ -1288,731 +1180,666 @@ public class ChangesetResourceUploadDeleteTest extends OsmResourceTestAbstract {
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteNoTags() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-            Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
-            Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
-            // now delete some elements
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML).accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
-                                           "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
-                                         // i don't understand why you would ever put these tags here at all
-                                         // if you're going to delete the nodes, which will automatically cause the
-                                         // tags to be deleted too (according to the rails port code)
-                                         "changeset=\"" + changesetId + "\">" +
-                                    "</node>" +
-                                    "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" +
-                                         changesetId + "\">" +
-                                        "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                        "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                    "</way>" +
-                                    "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " +
-                                         "changeset=\"" + changesetId + "\">" + "<member type=\"way\" " +
-                                         "role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
-                                    "</relation>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // now delete some elements
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML).accept(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
+                               "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
+                             // i don't understand why you would ever put these tags here at all
+                             // if you're going to delete the nodes, which will automatically cause the
+                             // tags to be deleted too (according to the rails port code)
+                             "changeset=\"" + changesetId + "\">" +
+                        "</node>" +
+                        "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" +
+                             changesetId + "\">" +
+                            "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                            "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                        "</way>" +
+                        "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " +
+                             "changeset=\"" + changesetId + "\">" + "<member type=\"way\" " +
+                             "role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
+                        "</relation>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(1, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                // check that the returned IDs are correct and the correct attributes were returned
-                Assert.assertEquals((long) nodeIdsArr[3],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(1, returnedNodes.getLength());
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(1, returnedWays.getLength());
+        // check that the returned IDs are correct and the correct attributes were returned
+        assertEquals((long) nodeIdsArr[3],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                Assert.assertEquals((long) wayIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(1, returnedWays.getLength());
 
-                NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
-                Assert.assertEquals(1, returnedRelations.getLength());
+        assertEquals((long) wayIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                Assert.assertEquals((long) relationIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
+        assertEquals(1, returnedRelations.getLength());
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
+        assertEquals((long) relationIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .map(currentNodesTbl.id, currentNodesTbl);
-                Assert.assertEquals(4, nodes.size());
+        Timestamp now = super.getCurrentDBTime();
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[0], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        Map<Long, CurrentNodes> nodes = createQuery(mapId)
+                .from(currentNodes)
+                .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[1], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        assertEquals(4, nodes.size());
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[0], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                nodeRecord = nodes.get(nodeIdsArr[4]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[4], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 4", tags.get("key 4"));
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                // verify the deleted node
-                nodeRecord = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .where(currentNodesTbl.id.eq(nodeIdsArr[3]))
-                        .singleResult(currentNodesTbl);
-                Assert.assertNull(nodeRecord);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        nodeRecord = nodes.get(nodeIdsArr[1]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[1], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null) || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-            try {
-                Map<Long, CurrentWays> ways = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl).map(currentWaysTbl.id, currentWaysTbl);
-                Assert.assertEquals(2, ways.size());
+        nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null) || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                CurrentWays wayRecord = ways.get(wayIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[0], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
-                List<CurrentWayNodes> wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[0]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
-                Assert.assertEquals(3, wayNodes.size());
-                CurrentWayNodes wayNode = wayNodes.get(0);
-                Assert.assertEquals(nodeIdsArr[0], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(1);
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(2);
-                Assert.assertEquals(nodeIdsArr[4], wayNode.getNodeId());
-                Assert.assertEquals(new Long(3), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) wayRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        nodeRecord = nodes.get(nodeIdsArr[4]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[4], nodeRecord.getId());
+        assertEquals(new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 4", tags.get("key 4"));
 
-                wayRecord = ways.get(wayIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[1], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
-                wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[1]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
-                Assert.assertEquals(2, wayNodes.size());
-                wayNode = wayNodes.get(0);
-                Assert.assertEquals(nodeIdsArr[2], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(1);
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                // verify the way with no tags
-                Assert.assertTrue((wayRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) wayRecord.getTags()).getValue()));
+        // verify the deleted node
+        nodeRecord = createQuery(mapId)
+                .select(currentNodes)
+                .from(currentNodes)
+                .where(currentNodes.id.eq(nodeIdsArr[3]))
+                .fetchOne();
 
-                // verify the deleted way
-                Assert.assertNull(
-                        new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                                .from(currentWaysTbl)
-                                .where(currentWaysTbl.id.eq(wayIdsArr[2]))
-                                .singleResult(currentWaysTbl));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking ways: " + e.getMessage());
-            }
+        assertNull(nodeRecord);
 
-            try {
-                Map<Long, CurrentRelations> relations = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .map(currentRelationsTbl.id, currentRelationsTbl);
+        Map<Long, CurrentWays> ways = createQuery(mapId)
+                .from(currentWays)
+                .transform(groupBy(currentWays.id).as(currentWays));
 
-                Assert.assertEquals(3, relations.size());
+        assertEquals(2, ways.size());
 
-                // verify the previously existing relations
-                CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[0], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
-                List<CurrentRelationMembers> members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[0]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
-                Assert.assertEquals(4, members.size());
-                CurrentRelationMembers member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        CurrentWays wayRecord = ways.get(wayIdsArr[0]);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[0], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                Assert.assertEquals(nodeIdsArr[0], member.getMemberId());
-                member = members.get(1);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role3", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        List<CurrentWayNodes> wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[0]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                Assert.assertEquals(wayIdsArr[1], member.getMemberId());
-                member = members.get(2);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role2", member.getMemberRole());
-                Assert.assertEquals(new Integer(3), member.getSequenceId());
+        assertEquals(3, wayNodes.size());
+        CurrentWayNodes wayNode = wayNodes.get(0);
+        assertEquals(nodeIdsArr[0], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(2);
+        assertEquals(nodeIdsArr[4], wayNode.getNodeId());
+        assertEquals(new Long(3), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        // verify the previously existing tags
+        tags = PostgresUtils.postgresObjToHStore(wayRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                Assert.assertEquals(wayIdsArr[0], member.getMemberId());
-                member = members.get(3);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(4), member.getSequenceId());
+        wayRecord = ways.get(wayIdsArr[1]);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[1], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
+        wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[1]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-                relationRecord = relations.get(relationIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[1], relationRecord.getId());
+        assertEquals(2, wayNodes.size());
+        wayNode = wayNodes.get(0);
+        assertEquals(nodeIdsArr[2], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        // verify the way with no tags
+        assertTrue((wayRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(wayRecord.getTags()).isEmpty());
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[1]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
-                Assert.assertEquals(2, members.size());
-                member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        // verify the deleted way
+        assertNull(
+                createQuery(mapId)
+                        .select(currentWays)
+                        .from(currentWays)
+                        .where(currentWays.id.eq(wayIdsArr[2]))
+                        .fetchOne());
 
-                Assert.assertEquals(nodeIdsArr[4], member.getMemberId());
-                member = members.get(1);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        Map<Long, CurrentRelations> relations = createQuery(mapId)
+                .from(currentRelations)
+                .transform(groupBy(currentRelations.id).as(currentRelations));
 
-                Assert.assertEquals(relationIdsArr[0], member.getMemberId());
-                tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 2", tags.get("key 2"));
-                Assert.assertEquals("val 3", tags.get("key 3"));
+        assertEquals(3, relations.size());
 
-                relationRecord = relations.get(relationIdsArr[3]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[3], relationRecord.getId());
+        // verify the previously existing relations
+        CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[0], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[3]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
-                Assert.assertEquals(1, members.size());
-                member = members.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        List<CurrentRelationMembers> members =
+                createQuery(mapId)
+                        .select(currentRelationMembers)
+                        .from(currentRelationMembers)
+                        .where(currentRelationMembers.relationId.eq(relationIdsArr[0]))
+                        .orderBy(currentRelationMembers.sequenceId.asc())
+                        .fetch();
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-                Assert.assertTrue((relationRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) relationRecord.getTags()).getValue()));
+        assertEquals(4, members.size());
+        CurrentRelationMembers member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                // verify the deleted relation
-                Assert.assertNull(new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .where(currentRelationsTbl.id.eq(relationIdsArr[2]))
-                        .singleResult(currentRelationsTbl));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking relations: " + e.getMessage());
-            }
+        assertEquals(nodeIdsArr[0], member.getMemberId());
+        member = members.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role3", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        assertEquals(wayIdsArr[1], member.getMemberId());
+        member = members.get(2);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role2", member.getMemberRole());
+        assertEquals(new Integer(3), member.getSequenceId());
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(15), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertEquals(wayIdsArr[0], member.getMemberId());
+        member = members.get(3);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("", member.getMemberRole());
+        assertEquals(new Integer(4), member.getSequenceId());
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        assertEquals(nodeIdsArr[2], member.getMemberId());
+        // verify the previously existing tags
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+
+        relationRecord = relations.get(relationIdsArr[1]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[1], relationRecord.getId());
+
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
+
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[1]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
+
+        assertEquals(2, members.size());
+        member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+
+        assertEquals(nodeIdsArr[4], member.getMemberId());
+        member = members.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
+
+        assertEquals(relationIdsArr[0], member.getMemberId());
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 2", tags.get("key 2"));
+        assertEquals("val 3", tags.get("key 3"));
+
+        relationRecord = relations.get(relationIdsArr[3]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[3], relationRecord.getId());
+
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
+
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[3]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
+
+        assertEquals(1, members.size());
+        member = members.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+
+        assertEquals(nodeIdsArr[2], member.getMemberId());
+        assertTrue((relationRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(relationRecord.getTags()).isEmpty());
+
+        // verify the deleted relation
+        assertNull(createQuery(mapId)
+                .select(currentRelations)
+                .from(currentRelations)
+                .where(currentRelations.id.eq(relationIdsArr[2]))
+                .fetchOne());
+
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
+
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(15), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = NotFoundException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteNonExistingNode() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
-        BoundingBox updateBounds = OsmTestUtils.createAfterModifiedTestChangesetBounds();
+        BoundingBox updateBounds = OSMTestUtils.createAfterModifiedTestChangesetBounds();
         // Try to delete a node in the changeset that doesn't exist. A failure
         // should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
-                                       "\" " + "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\""
-                                       + changesetId + "\">" + "</node>" + "<node id=\"" + (nodeIdsArr[4] + 1) +
-                                       "\" lon=\"" + updateBounds.getMinLon() + "\" " + "lat=\"" +
-                                      updateBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                    "<tag k=\"key 3\" v=\"val 3\"></tag>" +
-                                "</node>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
+                                   "\" " + "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\""
+                                   + changesetId + "\">" + "</node>" + "<node id=\"" + (nodeIdsArr[4] + 1) +
+                                   "\" lon=\"" + updateBounds.getMinLon() + "\" " + "lat=\"" +
+                                  updateBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                "<tag k=\"key 3\" v=\"val 3\"></tag>" +
+                            "</node>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.NOT_FOUND, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Element(s) being referenced don't exist."));
+        catch (NotFoundException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.NOT_FOUND, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Element(s) being referenced don't exist."));
 
             // make sure that any of the existing nodes weren't deleted
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
 
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = NotFoundException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteNonExistingWay() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Try to delete a way in the changeset that doesn't exist. A failure
         // should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                         "<osmChange version=\"0.3\" generator=\"iD\">" +
-                             "<create/>" +
-                             "<modify/>" +
-                             "<delete if-unused=\"true\">" +
-                                 "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                     "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                     "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                 "</way>" +
-                                 "<way id=\"" + (wayIdsArr[2] + 1) + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
-                             "</delete>" +
-                         "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                     "<osmChange version=\"0.3\" generator=\"iD\">" +
+                         "<create/>" +
+                         "<modify/>" +
+                         "<delete if-unused=\"true\">" +
+                             "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                 "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                                 "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                             "</way>" +
+                             "<way id=\"" + (wayIdsArr[2] + 1) + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
+                         "</delete>" +
+                     "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.NOT_FOUND, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Element(s) being referenced don't exist."));
+        catch (NotFoundException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.NOT_FOUND, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Element(s) being referenced don't exist."));
 
             // make sure that any of the existing nodes weren't deleted
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = NotFoundException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteNonExistingRelation() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Try to delete a relation in the changeset that doesn't exist. A
         // failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML).post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                    "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
-                                    "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[1] + "\"></member>" +
-                                "</relation>" +
-                                "<relation id=\"" + (relationIdsArr[3] + 1) + "\" version=\"1\" changeset=\""
-                                    + changesetId + "\">" +
-                                "</relation>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
+                                "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[1] + "\"></member>" +
+                            "</relation>" +
+                            "<relation id=\"" + (relationIdsArr[3] + 1) + "\" version=\"1\" changeset=\""
+                                + changesetId + "\">" +
+                            "</relation>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.NOT_FOUND, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Element(s) being referenced don't exist."));
+        catch (NotFoundException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.NOT_FOUND, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Element(s) being referenced don't exist."));
 
             // make sure that any of the existing nodes weren't deleted
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = BadRequestException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteDuplicateNodeIds() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Try to delete two nodes with the same ID. A failure should occur and
         // no data in the system should be modified.
         try {
-            resource().path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
-                                       "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                     "<tag k=\"key 1\" v=\"val 1\"></tag>" + "<tag k=\"key 2\" v=\"val 2\"></tag>" +
-                                "</node>" +
-                                "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
-                                        "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                     "<tag k=\"key 1\" v=\"val 1\"></tag>" + "<tag k=\"key 2\" v=\"val 2\"></tag>" +
-                                "</node>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
+                                   "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                 "<tag k=\"key 1\" v=\"val 1\"></tag>" + "<tag k=\"key 2\" v=\"val 2\"></tag>" +
+                            "</node>" +
+                            "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
+                                    "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                 "<tag k=\"key 1\" v=\"val 1\"></tag>" + "<tag k=\"key 2\" v=\"val 2\"></tag>" +
+                            "</node>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.BAD_REQUEST, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Duplicate OSM element ID"));
+        catch (BadRequestException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.BAD_REQUEST, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Duplicate OSM element ID"));
 
             // make sure that no nodes were deleted
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = BadRequestException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteDuplicateWayIds() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Try to delete two ways with the same ID. A failure should occur and
         // no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                    "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                    "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                    "<tag k=\"key 3\" v=\"val 3\"></tag>" +
-                                "</way>" +
-                                "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                                "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                                "<tag k=\"key 3\" v=\"val 3\"></tag>" +
+                            "</way>" +
+                            "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.BAD_REQUEST, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Duplicate OSM element ID"));
+        catch (BadRequestException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.BAD_REQUEST, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Duplicate OSM element ID"));
 
             // make sure that no nodes were deleted
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = BadRequestException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteDuplicateRelationIds() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Try to delete two relations with the same ID. A failure should occur
         // and no data in the system should be modified.
         try {
-            resource().path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                    "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
-                                    "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[1] + "\"></member>" +
-                                    "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                                    "<tag k=\"key 2\" v=\"val 2\"></tag>" +
-                                "</relation>" +
-                                "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                    "<tag k=\"key 1\" v=\"val 1\"></tag>" +
-                                    "<tag k=\"key 2\" v=\"val 2\"></tag>" +
-                                "</relation>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[2] + "\"></member>" +
+                                "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[1] + "\"></member>" +
+                                "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                                "<tag k=\"key 2\" v=\"val 2\"></tag>" +
+                            "</relation>" +
+                            "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                "<tag k=\"key 1\" v=\"val 1\"></tag>" +
+                                "<tag k=\"key 2\" v=\"val 2\"></tag>" +
+                            "</relation>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.BAD_REQUEST, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Duplicate OSM element ID"));
+        catch (BadRequestException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.BAD_REQUEST, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Duplicate OSM element ID"));
 
             // make sure that no nodes were deleted
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = ClientErrorException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteNodeInvalidVersion() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Update the changeset where one of the nodes has version that doesn't
         // match the version on he server. A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
-                                    "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                    "<tag k=\"key 1\" v=\"val 1\"></tag>" + "<tag k=\"key 2\" v=\"val 2\"></tag>" +
-                                "</node>" +
-                                "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
-                                    "lat=\"" + originalBounds.getMinLat() + "\" version=\"2\" changeset=\"" + changesetId + "\">" +
-                                    "<tag k=\"key 3\" v=\"val 3\"></tag>" +
-                                "</node>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
+                                "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                                "<tag k=\"key 1\" v=\"val 1\"></tag>" + "<tag k=\"key 2\" v=\"val 2\"></tag>" +
+                            "</node>" +
+                            "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
+                                "lat=\"" + originalBounds.getMinLat() + "\" version=\"2\" changeset=\"" + changesetId + "\">" +
+                                "<tag k=\"key 3\" v=\"val 3\"></tag>" +
+                            "</node>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.CONFLICT, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Invalid version"));
+        catch (ClientErrorException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.CONFLICT, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Invalid version"));
 
             // make sure that no nodes were deleted
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
@@ -2020,784 +1847,656 @@ public class ChangesetResourceUploadDeleteTest extends OsmResourceTestAbstract {
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteNegativeElementId() throws Exception {
-        try {
-            // We allow elements with a negative ID to exist, which allows for
-            // using the hoot --convert command as a source of test data for the services.
+        // We allow elements with a negative ID to exist, which allows for
+        // using the hoot --convert command as a source of test data for the services.
 
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            BoundingBox updateBounds = OsmTestUtils.createAfterModifiedTestChangesetBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        BoundingBox updateBounds = OSMTestUtils.createAfterModifiedTestChangesetBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
 
-            // link some nodes to the changeset
-            Set<Long> nodeIds = new LinkedHashSet<>();
+        // explicitly create a node with a negative ID
+        Map<String, String> tags = new HashMap<>();
+        tags.put("key 3", "val 3");
 
-            // explicitly create a node with a negative ID
-            Map<String, String> tags = new HashMap<>();
-            tags.put("key 3", "val 3");
-            long negativeNodeId = -1;
-            Node.insertNew(negativeNodeId, changesetId, mapId, originalBounds.getMaxLat(), originalBounds.getMaxLon(), tags, conn);
-            tags.clear();
+        long negativeNodeId = -1;
+        insertNew(negativeNodeId, changesetId, mapId, originalBounds.getMaxLat(), originalBounds.getMaxLon(), tags);
+        tags.clear();
 
-            CurrentNodes insertedNodeRecord = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                    .from(currentNodesTbl)
-                    .where(currentNodesTbl.id.eq(negativeNodeId))
-                    .singleResult(currentNodesTbl);
+        CurrentNodes insertedNodeRecord = createQuery(mapId)
+                .select(currentNodes)
+                .from(currentNodes)
+                .where(currentNodes.id.eq(negativeNodeId))
+                .fetchOne();
 
-            Assert.assertNotNull(insertedNodeRecord);
-            Assert.assertEquals(new Long(negativeNodeId), insertedNodeRecord.getId());
-            nodeIds.add(negativeNodeId);
+        assertNotNull(insertedNodeRecord);
+        assertEquals(new Long(negativeNodeId), insertedNodeRecord.getId());
 
-            tags.put("key 1", "val 1");
-            tags.put("key 2", "val 2");
-            nodeIds.add(Node.insertNew(changesetId, mapId, originalBounds.getMinLat(), originalBounds.getMinLon(), tags, conn));
-            tags.clear();
+        // link some nodes to the changeset
+        Set<Long> nodeIds = new LinkedHashSet<>();
+        nodeIds.add(negativeNodeId);
 
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        tags.put("key 1", "val 1");
+        tags.put("key 2", "val 2");
 
-            // link some ways to the changeset
-            Set<Long> wayIds = new LinkedHashSet<>();
-            List<Long> wayNodeIds = new ArrayList<>();
+        nodeIds.add(insertNew(changesetId, mapId, originalBounds.getMinLat(), originalBounds.getMinLon(), tags));
 
-            // explicitly create a way with a negative ID
-            wayNodeIds.add(nodeIdsArr[0]);
-            wayNodeIds.add(nodeIdsArr[1]);
-            tags.put("key 1", "val 1");
-            tags.put("key 2", "val 2");
-            long negativeWayId = -1;
-            OsmTestUtils.insertNewWay(negativeWayId, changesetId, mapId, wayNodeIds, tags, conn);
-            tags.clear();
+        tags.clear();
 
-            CurrentWays insertedWayRecord = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                    .from(currentWaysTbl)
-                    .where(currentWaysTbl.id.eq(negativeWayId))
-                    .singleResult(currentWaysTbl);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
 
-            Assert.assertNotNull(insertedWayRecord);
-            Assert.assertEquals(new Long(negativeWayId), insertedWayRecord.getId());
-            wayIds.add(negativeWayId);
+        // link some ways to the changeset
+        List<Long> wayNodeIds = new ArrayList<>();
 
-            wayNodeIds.clear();
-            wayNodeIds.add(nodeIdsArr[1]);
-            wayNodeIds.add(nodeIdsArr[2]);
-            wayIds.add(OsmTestUtils.insertNewWay(changesetId, mapId, wayNodeIds, null, conn));
+        // explicitly create a way with a negative ID
+        wayNodeIds.add(nodeIdsArr[0]);
+        wayNodeIds.add(nodeIdsArr[1]);
 
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        tags.put("key 1", "val 1");
+        tags.put("key 2", "val 2");
 
-            // link some relations to the changeset
-            Set<Long> relationIds = new LinkedHashSet<>();
+        long negativeWayId = -1;
+        OSMTestUtils.insertNewWay(negativeWayId, changesetId, mapId, wayNodeIds, tags);
+        tags.clear();
 
-            // explicitly create a relation with a negative ID
-            List<RelationMember> members = new ArrayList<>();
-            members.add(new RelationMember(nodeIdsArr[0], ElementType.Node, "role1"));
-            members.add(new RelationMember(wayIdsArr[0], ElementType.Way, "role1"));
-            tags.put("key 1", "val 1");
-            tags.put("key 2", "val 2");
-            long negativeRelationId = -1;
-            OsmTestUtils.insertNewRelation(negativeRelationId, changesetId, mapId, members, tags, conn);
-            tags.clear();
+        CurrentWays insertedWayRecord = createQuery(mapId)
+                .select(currentWays)
+                .from(currentWays)
+                .where(currentWays.id.eq(negativeWayId))
+                .fetchOne();
 
-            CurrentRelations insertedRelationRecord = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                    .from(currentRelationsTbl)
-                    .where(currentRelationsTbl.id.eq(negativeRelationId))
-                    .singleResult(currentRelationsTbl);
+        assertNotNull(insertedWayRecord);
+        assertEquals(new Long(negativeWayId), insertedWayRecord.getId());
 
-            Assert.assertNotNull(insertedRelationRecord);
-            Assert.assertEquals(new Long(negativeRelationId), insertedRelationRecord.getId());
-            relationIds.add(negativeRelationId);
+        Set<Long> wayIds = new LinkedHashSet<>();
+        wayIds.add(negativeWayId);
 
-            members.clear();
-            members.add(new RelationMember(nodeIdsArr[1], ElementType.Node, "role1"));
-            members.add(new RelationMember(wayIdsArr[1], ElementType.Way, "role1"));
-            relationIds.add(OsmTestUtils.insertNewRelation(changesetId, mapId, members, null, conn));
+        wayNodeIds.clear();
 
-            Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
+        wayNodeIds.add(nodeIdsArr[0]);
+        wayNodeIds.add(nodeIdsArr[1]);
 
-            // Update the changeset via the service. This update is valid,
-            // because the property was changed above.
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\"/>" +
-                                    "<node id=\"" + nodeIdsArr[1] + "\" lon=\"" + updateBounds.getMinLon() + "\" " +
-                                        "lat=\"" + updateBounds.getMinLat() + "\" version=\"1\" changeset=\"" +
-                                         changesetId + "\">" +
-                                    "</node>" +
-                                    "<node id=\"" + negativeNodeId + "\" lon=\"" + originalBounds.getMaxLon() + "\" " +
-                                        "lat=\"" + updateBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                    "</node>" +
-                                    "<way id=\"" + wayIdsArr[1] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
-                                        "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                        "<nd ref=\"" + nodeIdsArr[2] + "\"></nd>" +
-                                    "</way>" +
-                                    "<way id=\"" + negativeWayId + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
-                                        "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                        "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                    "</way>" +
-                                    "<relation id=\"" + relationIdsArr[1] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
-                                        "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
-                                        "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[1] + "\"></member>" +
-                                    "</relation>" +
-                                    "<relation id=\"" + negativeRelationId + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
-                                        "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
-                                        "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[0] + "\"></member>" +
-                                    "</relation>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        wayIds.add(OSMTestUtils.insertNewWay(changesetId, mapId, wayNodeIds, null));
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(2, returnedNodes.getLength());
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
 
-                // ID output ordering matches input ordering
+        // link some relations to the changeset
 
-                Assert.assertEquals((long) nodeIdsArr[1],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        // explicitly create a relation with a negative ID
+        List<RelationMember> members = new ArrayList<>();
+        members.add(new RelationMember(nodeIdsArr[0], ElementType.Node, "role1"));
+        members.add(new RelationMember(wayIdsArr[0], ElementType.Way, "role1"));
 
-                Assert.assertEquals(negativeNodeId,
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[2]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[2]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        tags.put("key 1", "val 1");
+        tags.put("key 2", "val 2");
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(2, returnedWays.getLength());
+        long negativeRelationId = -1;
+        OSMTestUtils.insertNewRelation(negativeRelationId, changesetId, mapId, members, tags);
+        tags.clear();
 
-                Assert.assertEquals((long) wayIdsArr[1],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        CurrentRelations insertedRelationRecord = createQuery(mapId)
+                .select(currentRelations)
+                .from(currentRelations)
+                .where(currentRelations.id.eq(negativeRelationId))
+                .fetchOne();
 
-                Assert.assertEquals(negativeWayId,
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[2]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[2]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        assertNotNull(insertedRelationRecord);
+        assertEquals(new Long(negativeRelationId), insertedRelationRecord.getId());
 
-                NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
-                Assert.assertEquals(2, returnedRelations.getLength());
+        Set<Long> relationIds = new LinkedHashSet<>();
+        relationIds.add(negativeRelationId);
 
-                Assert.assertEquals((long) relationIdsArr[1],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        members.clear();
+        members.add(new RelationMember(nodeIdsArr[1], ElementType.Node, "role1"));
+        members.add(new RelationMember(wayIdsArr[1], ElementType.Way, "role1"));
+        relationIds.add(OSMTestUtils.insertNewRelation(changesetId, mapId, members, null));
 
-                Assert.assertEquals(negativeRelationId,
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[2]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[2]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
-            try {
-                Assert.assertEquals(0, new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentNodesTbl).count());
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        // Update the changeset via the service. This update is valid,
+        // because the property was changed above.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<node id=\"" + nodeIdsArr[1] + "\" lon=\"" + updateBounds.getMinLon() + "\" " +
+                            "lat=\"" + updateBounds.getMinLat() + "\" version=\"1\" changeset=\"" +
+                             changesetId + "\">" +
+                        "</node>" +
+                        "<node id=\"" + nodeIdsArr[0] + "\" lon=\"" + originalBounds.getMaxLon() + "\" " +
+                            "lat=\"" + updateBounds.getMinLat() + "\" version=\"1\" changeset=\"" +
+                            changesetId + "\">" +
+                        "</node>" +
+                        "<way id=\"" + wayIdsArr[1] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
+                            "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                            "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                        "</way>" +
+                        "<way id=\"" + wayIdsArr[0] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
+                            "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                            "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                        "</way>" +
+                        "<relation id=\"" + relationIdsArr[1] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
+                            "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
+                            "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[1] + "\"></member>" +
+                        "</relation>" +
+                        "<relation id=\"" + relationIdsArr[0] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
+                            "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
+                            "<member type=\"way\" role=\"role1\" ref=\"" + wayIdsArr[0] + "\"></member>" +
+                        "</relation>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            try {
-                Assert.assertEquals(0,
-                        new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentWaysTbl).count());
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking ways: " + e.getMessage());
-            }
+        assertNotNull(responseData);
 
-            try {
-                Assert.assertEquals(0,
-                        new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentRelationsTbl).count());
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking relations: " + e.getMessage());
-            }
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(2, returnedNodes.getLength());
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        // ID output ordering matches input ordering
 
-                Assert.assertNotNull(changeset);
-                Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(12), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertEquals((long) nodeIdsArr[1],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(updateBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-        }
+        assertEquals(negativeNodeId,
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[2]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[2]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
+
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(2, returnedWays.getLength());
+
+        assertEquals((long) wayIdsArr[1],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
+
+        assertEquals(negativeWayId,
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[2]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[2]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
+
+        NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
+        assertEquals(2, returnedRelations.getLength());
+
+        assertEquals((long) relationIdsArr[1],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
+
+        assertEquals(negativeRelationId,
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[2]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[2]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
+
+        assertEquals(0, createQuery(mapId).from(currentNodes).fetchCount());
+        assertEquals(0, createQuery(mapId).from(currentWays).fetchCount());
+        assertEquals(0, createQuery(mapId).from(currentRelations).fetchCount());
+
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
+
+        assertNotNull(changeset);
+
+        Timestamp now = super.getCurrentDBTime();
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(18), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+//            BoundingBox expandedBounds = new BoundingBox(originalBounds);
+//            expandedBounds.expand(updateBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+//            Changeset hootChangeset = new Changeset(mapId, changesetId);
+//            BoundingBox changesetBounds = hootChangeset.getBounds();
+//            Assert.assertEquals(changesetBounds, expandedBounds);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteMissingNodeTagValue() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds, 5);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds, 5);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
 
-            // Now delete some nodes with an update to the changeset. One of the
-            // nodes being deleted does not have its tag value specified. The test should pass b/c
-            // node tags are optional for a delete and not parsed.
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" +
-                                        originalBounds.getMinLon() + "\" lat=\"" + originalBounds.getMinLat() +
-                                        "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                    "</node>" +
-                                    "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() +
-                                        "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
-                                       "changeset=\"" + changesetId + "\">" +
-                                       "<tag k=\"key 3\"></tag>" +
-                                    "</node>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // Now delete some nodes with an update to the changeset. One of the
+        // nodes being deleted does not have its tag value specified. The test should pass b/c
+        // node tags are optional for a delete and not parsed.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" +
+                                originalBounds.getMinLon() + "\" lat=\"" + originalBounds.getMinLat() +
+                                "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                            "</node>" +
+                            "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() +
+                                "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
+                               "changeset=\"" + changesetId + "\">" +
+                               "<tag k=\"key 3\"></tag>" +
+                            "</node>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(2, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                Assert.assertEquals((long) nodeIdsArr[3],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        Timestamp now = super.getCurrentDBTime();
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(2, returnedNodes.getLength());
 
-                Assert.assertEquals((long) nodeIdsArr[4],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[2]/@old_id", responseData)));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        assertEquals((long) nodeIdsArr[3],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
 
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .map(currentNodesTbl.id, currentNodesTbl);
+        assertEquals((long) nodeIdsArr[4],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[2]/@old_id", responseData)));
 
-                Assert.assertEquals(3, nodes.size());
+        Map<Long, CurrentNodes> nodes = createQuery(mapId)
+                .from(currentNodes)
+                .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        assertEquals(3, nodes.size());
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[1]);
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                Assert.assertNull(nodes.get(nodeIdsArr[3]));
-                Assert.assertNull(nodes.get(nodeIdsArr[4]));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                        .where(changesets.id.eq(changesetId)).singleResult(changesets);
+        assertNull(nodes.get(nodeIdsArr[3]));
+        assertNull(nodes.get(nodeIdsArr[4]));
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(7), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(7), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteMissingWayTagValue() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds, 8);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds, 8);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
 
-            // Now delete some ways with an update to the changeset. One of the
-            // ways being deleted does not have its tag value specified. The test should pass b/c
-            // way tags are optional for a delete and not parsed.
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<way id=\"" + wayIdsArr[0] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
-                                    "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // Now delete some ways with an update to the changeset. One of the
+        // ways being deleted does not have its tag value specified. The test should pass b/c
+        // way tags are optional for a delete and not parsed.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<way id=\"" + wayIdsArr[0] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
+                        "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(2, returnedWays.getLength());
+        assertNotNull(responseData);
 
-                Assert.assertEquals((long) wayIdsArr[0],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(2, returnedWays.getLength());
 
-                Assert.assertEquals((long) wayIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[2]/@old_id", responseData)));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        assertEquals((long) wayIdsArr[0],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
-            try {
-                Map<Long, CurrentWays> ways = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl)
-                        .map(currentWaysTbl.id, currentWaysTbl);
+        assertEquals((long) wayIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[2]/@old_id", responseData)));
 
-                Assert.assertEquals(1, ways.size());
-                Assert.assertNull(ways.get(wayIdsArr[0]));
+        Timestamp now = super.getCurrentDBTime();
 
-                CurrentWays wayRecord = ways.get(wayIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[1], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
+        Map<Long, CurrentWays> ways = createQuery(mapId)
+                .from(currentWays)
+                .transform(groupBy(currentWays.id).as(currentWays));
 
-                List<CurrentWayNodes> wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl).where(currentWayNodesTbl.wayId.eq(wayIdsArr[1]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
+        assertEquals(1, ways.size());
+        assertNull(ways.get(wayIdsArr[0]));
 
-                Assert.assertEquals(2, wayNodes.size());
-                CurrentWayNodes wayNode = wayNodes.get(0);
-                Assert.assertEquals(nodeIdsArr[2], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                wayNode = wayNodes.get(1);
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
-                Assert.assertTrue((wayRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) wayRecord.getTags()).getValue()));
+        CurrentWays wayRecord = ways.get(wayIdsArr[1]);
+        assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+        assertEquals(wayIdsArr[1], wayRecord.getId());
+        assertTrue(wayRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), wayRecord.getVersion());
+        assertTrue(wayRecord.getVisible());
 
-                Assert.assertNull(ways.get(wayIdsArr[2]));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking ways: " + e.getMessage());
-            }
+        List<CurrentWayNodes> wayNodes = createQuery(mapId)
+                .select(currentWayNodes)
+                .from(currentWayNodes)
+                .where(currentWayNodes.wayId.eq(wayIdsArr[1]))
+                .orderBy(currentWayNodes.sequenceId.asc())
+                .fetch();
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        assertEquals(2, wayNodes.size());
+        CurrentWayNodes wayNode = wayNodes.get(0);
+        assertEquals(nodeIdsArr[2], wayNode.getNodeId());
+        assertEquals(new Long(1), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        wayNode = wayNodes.get(1);
+        assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+        assertEquals(new Long(2), wayNode.getSequenceId());
+        assertEquals(wayRecord.getId(), wayNode.getWayId());
+        assertTrue((wayRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(wayRecord.getTags()).isEmpty());
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(10), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertNull(ways.get(wayIdsArr[2]));
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
+
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(10), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteMissingRelationTagValue() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-            Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
-            Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
-            // Now delete some relations with an update to the changeset. One of
-            // the relations being deleted does not have its tag value specified. The test should
-            // pass b/c tags are optional for a delete and not parsed.
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
-                                        "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
-                                    "</relation>" +
-                                    "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
-                                        "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
-                                            "<tag k=\"name 1\"/>" + // missing tag value
-                                    "</relation>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // Now delete some relations with an update to the changeset. One of
+        // the relations being deleted does not have its tag value specified. The test should
+        // pass b/c tags are optional for a delete and not parsed.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
+                            "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
+                        "</relation>" +
+                        "<relation id=\"" + relationIdsArr[3] + "\" version=\"1\" changeset=\"" + changesetId + "\" >" +
+                            "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
+                                "<tag k=\"name 1\"/>" + // missing tag value
+                        "</relation>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(0, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(0, returnedWays.getLength());
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(0, returnedNodes.getLength());
 
-                NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
-                Assert.assertEquals(2, returnedRelations.getLength());
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(0, returnedWays.getLength());
 
-                Assert.assertEquals((long) relationIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-                Assert.assertEquals((long) relationIdsArr[3],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[2]/@old_id", responseData)));
-                xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[2]");
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
+        assertEquals(2, returnedRelations.getLength());
 
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
+        assertEquals((long) relationIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
+        assertEquals((long) relationIdsArr[3],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[2]/@old_id", responseData)));
+        xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[2]");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-            OsmTestUtils.verifyTestNodesUnmodified(nodeIds, changesetId, originalBounds);
-            OsmTestUtils.verifyTestWaysUnmodified(wayIds, nodeIds, changesetId);
+        OSMTestUtils.verifyTestNodesUnmodified(nodeIds, changesetId, originalBounds);
+        OSMTestUtils.verifyTestWaysUnmodified(wayIds, nodeIds, changesetId);
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            try {
-                Map<Long, CurrentRelations> relations = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .map(currentRelationsTbl.id, currentRelationsTbl);
+        Timestamp now = super.getCurrentDBTime();
+        Map<Long, CurrentRelations> relations = createQuery(mapId)
+                .from(currentRelations)
+                .transform(groupBy(currentRelations.id).as(currentRelations));
 
-                Assert.assertEquals(2, relations.size());
+        assertEquals(2, relations.size());
 
-                CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[0], relationRecord.getId());
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
+        CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[0], relationRecord.getId());
+        assertEquals(new Long(1), relationRecord.getVersion());
 
-                List<CurrentRelationMembers> relationMembers = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[0]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc()).list(currentRelationMembersTbl);
+        List<CurrentRelationMembers> relationMembers =
+                createQuery(mapId)
+                        .select(currentRelationMembers)
+                        .from(currentRelationMembers)
+                        .where(currentRelationMembers.relationId.eq(relationIdsArr[0]))
+                        .orderBy(currentRelationMembers.sequenceId.asc())
+                        .fetch();
 
-                Assert.assertEquals(4, relationMembers.size());
-                CurrentRelationMembers member = relationMembers.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(4, relationMembers.size());
+        CurrentRelationMembers member = relationMembers.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                Assert.assertEquals(nodeIdsArr[0], member.getMemberId());
-                member = relationMembers.get(1);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role3", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        assertEquals(nodeIdsArr[0], member.getMemberId());
+        member = relationMembers.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role3", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
 
-                Assert.assertEquals(wayIdsArr[1], member.getMemberId());
-                member = relationMembers.get(2);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role2", member.getMemberRole());
-                Assert.assertEquals(new Integer(3), member.getSequenceId());
+        assertEquals(wayIdsArr[1], member.getMemberId());
+        member = relationMembers.get(2);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role2", member.getMemberRole());
+        assertEquals(new Integer(3), member.getSequenceId());
 
-                Assert.assertEquals(wayIdsArr[0], member.getMemberId());
-                member = relationMembers.get(3);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(4), member.getSequenceId());
+        assertEquals(wayIdsArr[0], member.getMemberId());
+        member = relationMembers.get(3);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("", member.getMemberRole());
+        assertEquals(new Integer(4), member.getSequenceId());
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
+        assertEquals(nodeIdsArr[2], member.getMemberId());
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
 
-                relationRecord = relations.get(relationIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[1], relationRecord.getId());
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
+        relationRecord = relations.get(relationIdsArr[1]);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[1], relationRecord.getId());
+        assertEquals(new Long(1), relationRecord.getVersion());
 
-                relationMembers = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[1]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc()).list(currentRelationMembersTbl);
+        relationMembers = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[1]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                Assert.assertEquals(2, relationMembers.size());
-                member = relationMembers.get(0);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(2, relationMembers.size());
+        member = relationMembers.get(0);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                Assert.assertEquals(nodeIdsArr[4], member.getMemberId());
-                member = relationMembers.get(1);
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        assertEquals(nodeIdsArr[4], member.getMemberId());
+        member = relationMembers.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
 
-                Assert.assertEquals(relationIdsArr[0], member.getMemberId());
-                tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 2", tags.get("key 2"));
-                Assert.assertEquals("val 3", tags.get("key 3"));
-                Assert.assertNull(relations.get(relationIdsArr[2]));
-                Assert.assertNull(relations.get(relationIdsArr[3]));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking relations: " + e.getMessage());
-            }
+        assertEquals(relationIdsArr[0], member.getMemberId());
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 2", tags.get("key 2"));
+        assertEquals("val 3", tags.get("key 3"));
+        assertNull(relations.get(relationIdsArr[2]));
+        assertNull(relations.get(relationIdsArr[3]));
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(14), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(14), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = ClientErrorException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteWayInvalidVersion() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Send a changeset delete request where one of the ways has a version
         // not equal to what's on the server. A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" + "<delete if-unused=\"true\">" +
-                                "<way id=\"" + wayIdsArr[0] + "\" version=\"0\" changeset=\"" + changesetId + "\" >" +
-                                    "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                    "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
-                                "</way>" +
-                                "<way id=\"" + wayIdsArr[1] + "\" version=\"2\" changeset=\"" + changesetId + "\" >" +
-                                    "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" + "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
-                                "</way>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" + "<delete if-unused=\"true\">" +
+                            "<way id=\"" + wayIdsArr[0] + "\" version=\"0\" changeset=\"" + changesetId + "\" >" +
+                                "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                                "<nd ref=\"" + nodeIdsArr[1] + "\"></nd>" +
+                            "</way>" +
+                            "<way id=\"" + wayIdsArr[1] + "\" version=\"2\" changeset=\"" + changesetId + "\" >" +
+                                "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" + "<nd ref=\"" + nodeIdsArr[0] + "\"></nd>" +
+                            "</way>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.CONFLICT, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Invalid version"));
-
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+        catch (ClientErrorException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.CONFLICT, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Invalid version"));
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = ClientErrorException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteRelationInvalidVersion() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Send a changeset delete request where one of the relations has a
         // version not equal to what's on the server. A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\">" +
-                                "<relation id=\"" + relationIdsArr[0] + "\" version=\"0\" changeset=\"" +
-                                    changesetId + "\" >" +
-                                "</relation>" +
-                                "<relation id=\"" + relationIdsArr[1] + "\" version=\"2\" changeset=\"" +
-                                    changesetId + "\" >" +
-                                "</relation>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<relation id=\"" + relationIdsArr[0] + "\" version=\"0\" changeset=\"" +
+                                changesetId + "\" >" +
+                            "</relation>" +
+                            "<relation id=\"" + relationIdsArr[1] + "\" version=\"2\" changeset=\"" +
+                                changesetId + "\" >" +
+                            "</relation>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.CONFLICT, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("Invalid version"));
-
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+        catch (ClientErrorException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.CONFLICT, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("Invalid version"));
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
@@ -2805,1352 +2504,1189 @@ public class ChangesetResourceUploadDeleteTest extends OsmResourceTestAbstract {
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteNodeStillBelongsToWayWithIfUnused() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-            Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
-            // Try to delete some elements with the "if-unused" tag is passed
-            // where one of them is a node that still belongs to a way. No failure should occur, the node
-            // should not be deleted, and the other element should be deleted.
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<node id=\"" + nodeIdsArr[0] + "\" lon=\"" + originalBounds.getMinLon() +
-                                        "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
-                                        "changeset=\"" + changesetId + "\">" +
-                                    "</node>" +
-                                    "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" + "</way>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
+        // Try to delete some elements with the "if-unused" tag is passed
+        // where one of them is a node that still belongs to a way. No failure should occur, the node
+        // should not be deleted, and the other element should be deleted.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\">" +
+                            "<node id=\"" + nodeIdsArr[0] + "\" lon=\"" + originalBounds.getMinLon() +
+                                "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " +
+                                "changeset=\"" + changesetId + "\">" +
+                            "</node>" +
+                            "<way id=\"" + wayIdsArr[2] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" + "</way>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            Assert.assertNotNull(responseData);
+        assertNotNull(responseData);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
 
-                Assert.assertEquals(0, returnedNodes.getLength());
+        assertEquals(0, returnedNodes.getLength());
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
 
-                Assert.assertEquals(1, returnedWays.getLength());
+        assertEquals(1, returnedWays.getLength());
 
-                Assert.assertEquals((long) wayIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
+        assertEquals((long) wayIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/way[1]/@old_id", responseData)));
 
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/way[1]");
 
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl).map(currentNodesTbl.id, currentNodesTbl);
+        Timestamp now = super.getCurrentDBTime();
 
-                Assert.assertEquals(5, nodes.size());
+        Map<Long, CurrentNodes> nodes = createQuery(mapId)
+                .from(currentNodes)
+                .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        assertEquals(5, nodes.size());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[0], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
 
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[0], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[1], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[1]);
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[1], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[2]);
 
-                nodeRecord = nodes.get(nodeIdsArr[3]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[3], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        nodeRecord = nodes.get(nodeIdsArr[3]);
 
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[3], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 3", tags.get("key 3"));
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-                nodeRecord = nodes.get(nodeIdsArr[4]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[4], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 3", tags.get("key 3"));
 
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        nodeRecord = nodes.get(nodeIdsArr[4]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[4], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 4", tags.get("key 4"));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-            try {
-                Map<Long, CurrentWays> ways = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWaysTbl)
-                        .map(currentWaysTbl.id, currentWaysTbl);
-                Assert.assertEquals(2, ways.size());
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 4", tags.get("key 4"));
 
-                CurrentWays wayRecord = ways.get(wayIdsArr[0]);
+            Map<Long, CurrentWays> ways = createQuery(mapId)
+                    .from(currentWays)
+                    .transform(groupBy(currentWays.id).as(currentWays));
 
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[0], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
+            assertEquals(2, ways.size());
 
-                List<CurrentWayNodes> wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[0]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
+            CurrentWays wayRecord = ways.get(wayIdsArr[0]);
 
-                Assert.assertEquals(3, wayNodes.size());
+            assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+            assertEquals(wayIdsArr[0], wayRecord.getId());
+            assertTrue(wayRecord.getTimestamp().before(now));
+            assertEquals(new Long(1), wayRecord.getVersion());
+            assertTrue(wayRecord.getVisible());
 
-                CurrentWayNodes wayNode = wayNodes.get(0);
+            List<CurrentWayNodes> wayNodes = createQuery(mapId)
+                    .select(currentWayNodes)
+                    .from(currentWayNodes)
+                    .where(currentWayNodes.wayId.eq(wayIdsArr[0]))
+                    .orderBy(currentWayNodes.sequenceId.asc())
+                    .fetch();
 
-                Assert.assertEquals(nodeIdsArr[0], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+            assertEquals(3, wayNodes.size());
 
-                wayNode = wayNodes.get(1);
+            CurrentWayNodes wayNode = wayNodes.get(0);
 
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+            assertEquals(nodeIdsArr[0], wayNode.getNodeId());
+            assertEquals(new Long(1), wayNode.getSequenceId());
+            assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                wayNode = wayNodes.get(2);
+            wayNode = wayNodes.get(1);
 
-                Assert.assertEquals(nodeIdsArr[4], wayNode.getNodeId());
-                Assert.assertEquals(new Long(3), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+            assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+            assertEquals(new Long(2), wayNode.getSequenceId());
+            assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                // verify the previously existing tags
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) wayRecord.getTags());
+            wayNode = wayNodes.get(2);
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+            assertEquals(nodeIdsArr[4], wayNode.getNodeId());
+            assertEquals(new Long(3), wayNode.getSequenceId());
+            assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                wayRecord = ways.get(wayIdsArr[1]);
+            // verify the previously existing tags
+            tags = PostgresUtils.postgresObjToHStore(wayRecord.getTags());
 
-                Assert.assertEquals(new Long(changesetId), wayRecord.getChangesetId());
-                Assert.assertEquals(wayIdsArr[1], wayRecord.getId());
-                Assert.assertTrue(wayRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), wayRecord.getVersion());
-                Assert.assertTrue(wayRecord.getVisible());
+            assertNotNull(tags);
+            assertEquals(2, tags.size());
+            assertEquals("val 1", tags.get("key 1"));
+            assertEquals("val 2", tags.get("key 2"));
 
-                wayNodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentWayNodesTbl)
-                        .where(currentWayNodesTbl.wayId.eq(wayIdsArr[1]))
-                        .orderBy(currentWayNodesTbl.sequenceId.asc())
-                        .list(currentWayNodesTbl);
+            wayRecord = ways.get(wayIdsArr[1]);
 
-                Assert.assertEquals(2, wayNodes.size());
+            assertEquals(new Long(changesetId), wayRecord.getChangesetId());
+            assertEquals(wayIdsArr[1], wayRecord.getId());
+            assertTrue(wayRecord.getTimestamp().before(now));
+            assertEquals(new Long(1), wayRecord.getVersion());
+            assertTrue(wayRecord.getVisible());
 
-                wayNode = wayNodes.get(0);
+            wayNodes = createQuery(mapId)
+                    .select(currentWayNodes)
+                    .from(currentWayNodes)
+                    .where(currentWayNodes.wayId.eq(wayIdsArr[1]))
+                    .orderBy(currentWayNodes.sequenceId.asc())
+                    .fetch();
 
-                Assert.assertEquals(nodeIdsArr[2], wayNode.getNodeId());
-                Assert.assertEquals(new Long(1), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+            assertEquals(2, wayNodes.size());
 
-                wayNode = wayNodes.get(1);
+            wayNode = wayNodes.get(0);
 
-                Assert.assertEquals(nodeIdsArr[1], wayNode.getNodeId());
-                Assert.assertEquals(new Long(2), wayNode.getSequenceId());
-                Assert.assertEquals(wayRecord.getId(), wayNode.getWayId());
+            assertEquals(nodeIdsArr[2], wayNode.getNodeId());
+            assertEquals(new Long(1), wayNode.getSequenceId());
+            assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-                // verify the way with no tags
-                Assert.assertTrue((wayRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) wayRecord.getTags()).getValue()));
+            wayNode = wayNodes.get(1);
 
-                // verify the deleted way
-                Assert.assertNull(new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(currentWaysTbl)
-                        .where(currentWaysTbl.id.eq(wayIdsArr[2])).singleResult(currentWaysTbl));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking ways: " + e.getMessage());
-            }
+            assertEquals(nodeIdsArr[1], wayNode.getNodeId());
+            assertEquals(new Long(2), wayNode.getSequenceId());
+            assertEquals(wayRecord.getId(), wayNode.getWayId());
 
-            OsmTestUtils.verifyTestRelationsUnmodified(relationIds, wayIds, nodeIds, changesetId);
+            // verify the way with no tags
+            assertTrue((wayRecord.getTags() == null)
+                    || PostgresUtils.postgresObjToHStore(wayRecord.getTags()).isEmpty());
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                        .where(changesets.id.eq(changesetId)).singleResult(changesets);
+            // verify the deleted way
+            assertNull(createQuery(mapId)
+                    .select(currentWays)
+                    .from(currentWays)
+                    .where(currentWays.id.eq(wayIdsArr[2]))
+                    .fetchOne());
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(13), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        OSMTestUtils.verifyTestRelationsUnmodified(relationIds, wayIds, nodeIds, changesetId);
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
 
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(13), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+
+        assertEquals(changesetBounds, expandedBounds);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteNodeStillBelongsToRelationWithIfUnused() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> relationIds = OsmTestUtils.createTestRelationsNoWays(changesetId, nodeIds);
-            Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> relationIds = OSMTestUtils.createTestRelationsNoWays(changesetId, nodeIds);
+        Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
-            // Try to delete some elements with the "if-unused" tag is passed
-            // where one of them is a node that still belongs to a relation. No failure should occur, the
-            // node should not be deleted, and the other element should be deleted.
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
-                                        "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" +
-                                        changesetId + "\">" +
-                                    "</node>" +
-                                    "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() +
-                                        "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" +
-                                        changesetId + "\">" +
-                                    "</node>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // Try to delete some elements with the "if-unused" tag is passed
+        // where one of them is a node that still belongs to a relation. No failure should occur, the
+        // node should not be deleted, and the other element should be deleted.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<node id=\"" + nodeIdsArr[3] + "\" lon=\"" + originalBounds.getMinLon() +
+                            "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" +
+                            changesetId + "\">" +
+                        "</node>" +
+                        "<node id=\"" + nodeIdsArr[4] + "\" lon=\"" + originalBounds.getMinLon() +
+                            "\" lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" " + "changeset=\"" +
+                            changesetId + "\">" +
+                        "</node>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertNotNull(responseData);
 
-                Assert.assertEquals(1, returnedNodes.getLength());
-                Assert.assertEquals((long) nodeIdsArr[3],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
 
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        assertEquals(1, returnedNodes.getLength());
+        assertEquals((long) nodeIdsArr[3],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(0, returnedWays.getLength());
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
-                Assert.assertEquals(0, returnedRelations.getLength());
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(0, returnedWays.getLength());
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .map(currentNodesTbl.id, currentNodesTbl);
-                Assert.assertEquals(4, nodes.size());
+        NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
+        assertEquals(0, returnedRelations.getLength());
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[0], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        Timestamp now = super.getCurrentDBTime();
 
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        Map<Long, CurrentNodes> nodes = createQuery(mapId)
+                .from(currentNodes)
+                .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        assertEquals(4, nodes.size());
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[0], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[1], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        nodeRecord = nodes.get(nodeIdsArr[1]);
 
-                Assert.assertNull(nodes.get(nodeIdsArr[3]));
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[1], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                nodeRecord = nodes.get(nodeIdsArr[4]);
+        nodeRecord = nodes.get(nodeIdsArr[2]);
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[4], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        assertNull(nodes.get(nodeIdsArr[3]));
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 4", tags.get("key 4"));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        nodeRecord = nodes.get(nodeIdsArr[4]);
 
-            try {
-                List<CurrentRelations> relations = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl).list(currentRelationsTbl);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[4], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                Assert.assertEquals(3, relations.size());
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-                CurrentRelations relationRecord = relations.get(0);
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 4", tags.get("key 4"));
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[0], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        List<CurrentRelations> relations = createQuery(mapId)
+                .select(currentRelations)
+                .from(currentRelations)
+                .fetch();
 
-                List<CurrentRelationMembers> members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[0]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc()).list(currentRelationMembersTbl);
+        assertEquals(3, relations.size());
 
-                Assert.assertEquals(2, members.size());
+        CurrentRelations relationRecord = relations.get(0);
 
-                CurrentRelationMembers member = members.get(0);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[0], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[0], member.getMemberId());
+        List<CurrentRelationMembers> members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[0]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                member = members.get(1);
+        assertEquals(2, members.size());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
+        CurrentRelationMembers member = members.get(0);
 
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(nodeIdsArr[0], member.getMemberId());
 
-                relationRecord = relations.get(1);
+        member = members.get(1);
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[1], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[1]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        assertEquals(nodeIdsArr[2], member.getMemberId());
 
-                Assert.assertEquals(2, members.size());
+        relationRecord = relations.get(1);
 
-                member = members.get(0);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[1], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[1]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                Assert.assertEquals(nodeIdsArr[4], member.getMemberId());
+        assertEquals(2, members.size());
 
-                member = members.get(1);
+        member = members.get(0);
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
-                Assert.assertEquals(relationIdsArr[0], member.getMemberId());
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
 
-                relationRecord = relations.get(2);
+        assertEquals(nodeIdsArr[4], member.getMemberId());
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[2], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        member = members.get(1);
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[2]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
+        assertEquals(relationIdsArr[0], member.getMemberId());
 
-                Assert.assertEquals(1, members.size());
+        relationRecord = relations.get(2);
 
-                member = members.get(0);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[2], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking relations: " + e.getMessage());
-            }
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[2]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-            OsmTestUtils.verifyTestRelationsNoWaysUnmodified(relationIds, nodeIds, changesetId, true);
+        assertEquals(1, members.size());
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                        .where(changesets.id.eq(changesetId)).singleResult(changesets);
+        member = members.get(0);
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(13), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(nodeIdsArr[2], member.getMemberId());
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
+        OSMTestUtils.verifyTestRelationsNoWaysUnmodified(relationIds, nodeIds, changesetId, true);
 
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
+
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(13), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+
+        assertEquals(changesetBounds, expandedBounds);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteWayStillBelongsToRelationWithIfUnused() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-            Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
-            // Try to delete some elements with the "if-unused" tag is passed
-            // where one of them is a way that still belongs to a relation. No failure should occur, the
-            // way should not be deleted, and the other element should be deleted.
-            Document responseData = null;
-            try {
-                responseData = resource().path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<node id=\"" + nodeIdsArr[3] +
-                                        "\" lon=\"" + originalBounds.getMinLon() + "\" lat=\"" + originalBounds.getMinLat() +
-                                        "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                    "</node>" +
-                                    "<way id=\"" + wayIdsArr[1] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" + "</way>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // Try to delete some elements with the "if-unused" tag is passed
+        // where one of them is a way that still belongs to a relation. No failure should occur, the
+        // way should not be deleted, and the other element should be deleted.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<node id=\"" + nodeIdsArr[3] +
+                            "\" lon=\"" + originalBounds.getMinLon() + "\" lat=\"" + originalBounds.getMinLat() +
+                            "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "</node>" +
+                        "<way id=\"" + wayIdsArr[1] + "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" + "</way>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(1, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                Assert.assertEquals((long) nodeIdsArr[3],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(1, returnedNodes.getLength());
 
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
+        assertEquals((long) nodeIdsArr[3],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/node[1]/@old_id", responseData)));
 
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/node[1]");
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-                Assert.assertEquals(0, returnedWays.getLength());
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
-            try {
-                Map<Long, CurrentNodes> nodes = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentNodesTbl)
-                        .map(currentNodesTbl.id, currentNodesTbl);
+        assertEquals(0, returnedWays.getLength());
 
-                Assert.assertEquals(4, nodes.size());
+        Timestamp now = super.getCurrentDBTime();
 
-                CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
+        Map<Long, CurrentNodes> nodes = createQuery(mapId)
+                .from(currentNodes)
+                .transform(groupBy(currentNodes.id).as(currentNodes));
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[0], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        assertEquals(4, nodes.size());
 
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        CurrentNodes nodeRecord = nodes.get(nodeIdsArr[0]);
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
-                Assert.assertEquals("val 2", tags.get("key 2"));
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[0], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-                nodeRecord = nodes.get(nodeIdsArr[1]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[1], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-                nodeRecord = nodes.get(nodeIdsArr[2]);
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[2], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
-                Assert.assertTrue((nodeRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) nodeRecord.getTags()).getValue()));
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
+        assertEquals("val 2", tags.get("key 2"));
 
-                Assert.assertNull(nodes.get(nodeIdsArr[3]));
+        nodeRecord = nodes.get(nodeIdsArr[1]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMaxLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMaxLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[1], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                nodeRecord = nodes.get(nodeIdsArr[4]);
+        nodeRecord = nodes.get(nodeIdsArr[2]);
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[2], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
+        assertTrue((nodeRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(nodeRecord.getTags()).isEmpty());
 
-                Assert.assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
-                Assert.assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
-                Assert.assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
-                Assert.assertEquals(nodeIdsArr[4], nodeRecord.getId());
-                Assert.assertEquals(
-                        new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
-                        nodeRecord.getTile());
-                Assert.assertTrue(nodeRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), nodeRecord.getVersion());
-                Assert.assertTrue(nodeRecord.getVisible());
+        assertNull(nodes.get(nodeIdsArr[3]));
 
-                tags = PostgresUtils.postgresObjToHStore((PGobject) nodeRecord.getTags());
+        nodeRecord = nodes.get(nodeIdsArr[4]);
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 4", tags.get("key 4"));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking nodes: " + e.getMessage());
-            }
+        assertEquals(new Long(changesetId), nodeRecord.getChangesetId());
+        assertEquals(new Double(originalBounds.getMinLat()), nodeRecord.getLatitude());
+        assertEquals(new Double(originalBounds.getMinLon()), nodeRecord.getLongitude());
+        assertEquals(nodeIdsArr[4], nodeRecord.getId());
+        assertEquals(
+                new Long(QuadTileCalculator.tileForPoint(nodeRecord.getLatitude(), nodeRecord.getLongitude())),
+                nodeRecord.getTile());
+        assertTrue(nodeRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), nodeRecord.getVersion());
+        assertTrue(nodeRecord.getVisible());
 
-            OsmTestUtils.verifyTestWaysUnmodified(wayIds, nodeIds, changesetId);
-            OsmTestUtils.verifyTestRelationsUnmodified(relationIds, wayIds, nodeIds, changesetId);
+        tags = PostgresUtils.postgresObjToHStore(nodeRecord.getTags());
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 4", tags.get("key 4"));
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
-                Assert.assertEquals(new Integer(13), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        OSMTestUtils.verifyTestWaysUnmodified(wayIds, nodeIds, changesetId);
+        OSMTestUtils.verifyTestRelationsUnmodified(relationIds, wayIds, nodeIds, changesetId);
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
 
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        assertEquals(new Integer(13), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+
+        assertEquals(changesetBounds, expandedBounds);
     }
 
     @Test
     @Category(UnitTest.class)
     public void testUploadDeleteRelationStillBelongsToRelationWithIfUnused() throws Exception {
-        try {
-            BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-            long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-            Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-            Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-            Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-            Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-            Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
-            Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
-            // Try to delete some elements with the "if-unused" tag is passed
-            // where one of them is a relation that still belongs to a relation. No failure should
-            // occur, the relation should not be deleted, and the other element should be deleted.
-            Document responseData = null;
-            try {
-                responseData = resource()
-                        .path("api/0.6/changeset/" + changesetId + "/upload")
-                        .queryParam("mapId", String.valueOf(mapId))
-                        .type(MediaType.TEXT_XML)
-                        .accept(MediaType.TEXT_XML)
-                        .post(Document.class,
-                            "<osmChange version=\"0.3\" generator=\"iD\">" +
-                                "<create/>" +
-                                "<modify/>" +
-                                "<delete if-unused=\"true\">" +
-                                    "<relation id=\"" + relationIdsArr[0] +
-                                        "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
-                                    "</relation>" +
-                                    "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" +
-                                        changesetId + "\">" +
-                                    "</relation>" +
-                                "</delete>" +
-                            "</osmChange>");
-            }
-            catch (UniformInterfaceException e) {
-                ClientResponse r = e.getResponse();
-                Assert.fail("Unexpected response " + r.getStatus() + " " + r.getEntity(String.class));
-            }
-            Assert.assertNotNull(responseData);
+        // Try to delete some elements with the "if-unused" tag is passed
+        // where one of them is a relation that still belongs to a relation. No failure should
+        // occur, the relation should not be deleted, and the other element should be deleted.
+        Document responseData = target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\">" +
+                        "<relation id=\"" + relationIdsArr[0] +
+                            "\" version=\"1\" " + "changeset=\"" + changesetId + "\">" +
+                        "</relation>" +
+                        "<relation id=\"" + relationIdsArr[2] + "\" version=\"1\" " + "changeset=\"" +
+                            changesetId + "\">" +
+                        "</relation>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
 
-            XPath xpath = XmlUtils.createXPath();
-            try {
-                NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
-                Assert.assertEquals(0, returnedNodes.getLength());
+        assertNotNull(responseData);
 
-                NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
-                Assert.assertEquals(0, returnedWays.getLength());
+        XPath xpath = XmlUtils.createXPath();
+        NodeList returnedNodes = XPathAPI.selectNodeList(responseData, "//osm/diffResult/node");
+        assertEquals(0, returnedNodes.getLength());
 
-                NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
+        NodeList returnedWays = XPathAPI.selectNodeList(responseData, "//osm/diffResult/way");
+        assertEquals(0, returnedWays.getLength());
 
-                Assert.assertEquals(1, returnedRelations.getLength());
-                Assert.assertEquals((long) relationIdsArr[2],
-                        Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
-                org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
+        NodeList returnedRelations = XPathAPI.selectNodeList(responseData, "//osm/diffResult/relation");
 
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_id"));
-                Assert.assertNull(xml.getAttributes().getNamedItem("new_version"));
-            }
-            catch (XPathExpressionException e) {
-                Assert.fail("Error parsing response document: " + e.getMessage());
-            }
+        assertEquals(1, returnedRelations.getLength());
+        assertEquals((long) relationIdsArr[2],
+                Long.parseLong(xpath.evaluate("//osm/diffResult/relation[1]/@old_id", responseData)));
+        org.w3c.dom.Node xml = XPathAPI.selectSingleNode(responseData, "//osm/diffResult/relation[1]");
 
-            QChangesets changesets = QChangesets.changesets;
-            Changesets changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId)).from(changesets)
-                    .where(changesets.id.eq(changesetId)).singleResult(changesets);
+        assertNull(xml.getAttributes().getNamedItem("new_id"));
+        assertNull(xml.getAttributes().getNamedItem("new_version"));
 
-            OsmTestUtils.verifyTestNodesUnmodified(nodeIds, changesetId, originalBounds);
-            OsmTestUtils.verifyTestWaysUnmodified(wayIds, nodeIds, changesetId);
+        OSMTestUtils.verifyTestNodesUnmodified(nodeIds, changesetId, originalBounds);
+        OSMTestUtils.verifyTestWaysUnmodified(wayIds, nodeIds, changesetId);
 
-            Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
-            try {
-                Map<Long, CurrentRelations> relations = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .map(currentRelationsTbl.id, currentRelationsTbl);
-                Assert.assertEquals(3, relations.size());
+        Timestamp now = super.getCurrentDBTime();
+        Map<Long, CurrentRelations> relations = createQuery(mapId)
+                .from(currentRelations)
+                .transform(groupBy(currentRelations.id).as(currentRelations));
 
-                // verify the previously existing relations
-                CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
+        assertEquals(3, relations.size());
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[0], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        // verify the previously existing relations
+        CurrentRelations relationRecord = relations.get(relationIdsArr[0]);
 
-                List<CurrentRelationMembers> members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[0]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[0], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(4, members.size());
+        List<CurrentRelationMembers> members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[0]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                CurrentRelationMembers member = members.get(0);
+        assertEquals(4, members.size());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[0], member.getMemberId());
+        CurrentRelationMembers member = members.get(0);
 
-                member = members.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(nodeIdsArr[0], member.getMemberId());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role3", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
-                Assert.assertEquals(wayIdsArr[1], member.getMemberId());
+        member = members.get(1);
 
-                member = members.get(2);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role3", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
+        assertEquals(wayIdsArr[1], member.getMemberId());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
-                Assert.assertEquals("role2", member.getMemberRole());
-                Assert.assertEquals(new Integer(3), member.getSequenceId());
-                Assert.assertEquals(wayIdsArr[0], member.getMemberId());
+        member = members.get(2);
 
-                member = members.get(3);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.way, member.getMemberType());
+        assertEquals("role2", member.getMemberRole());
+        assertEquals(new Integer(3), member.getSequenceId());
+        assertEquals(wayIdsArr[0], member.getMemberId());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(4), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
+        member = members.get(3);
 
-                Map<String, String> tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("", member.getMemberRole());
+        assertEquals(new Integer(4), member.getSequenceId());
+        assertEquals(nodeIdsArr[2], member.getMemberId());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(1, tags.size());
-                Assert.assertEquals("val 1", tags.get("key 1"));
+        Map<String, String> tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
 
-                relationRecord = relations.get(relationIdsArr[1]);
+        assertNotNull(tags);
+        assertEquals(1, tags.size());
+        assertEquals("val 1", tags.get("key 1"));
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[1], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        relationRecord = relations.get(relationIdsArr[1]);
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[1]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[1], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(2, members.size());
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[1]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                member = members.get(0);
+        assertEquals(2, members.size());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[4], member.getMemberId());
+        member = members.get(0);
 
-                member = members.get(1);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(nodeIdsArr[4], member.getMemberId());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
-                Assert.assertEquals(relationIdsArr[0], member.getMemberId());
+        member = members.get(1);
 
-                tags = PostgresUtils.postgresObjToHStore((PGobject) relationRecord.getTags());
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(2), member.getSequenceId());
+        assertEquals(relationIdsArr[0], member.getMemberId());
 
-                Assert.assertNotNull(tags);
-                Assert.assertEquals(2, tags.size());
-                Assert.assertEquals("val 2", tags.get("key 2"));
-                Assert.assertEquals("val 3", tags.get("key 3"));
-                Assert.assertNull(relations.get(relationIdsArr[2]));
+        tags = PostgresUtils.postgresObjToHStore(relationRecord.getTags());
 
-                relationRecord = relations.get(relationIdsArr[3]);
+        assertNotNull(tags);
+        assertEquals(2, tags.size());
+        assertEquals("val 2", tags.get("key 2"));
+        assertEquals("val 3", tags.get("key 3"));
+        assertNull(relations.get(relationIdsArr[2]));
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[3], relationRecord.getId());
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+        relationRecord = relations.get(relationIdsArr[3]);
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[3]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+        assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+        assertEquals(relationIdsArr[3], relationRecord.getId());
+        assertTrue(relationRecord.getTimestamp().before(now));
+        assertEquals(new Long(1), relationRecord.getVersion());
+        assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(1, members.size());
+        members = createQuery(mapId)
+                .select(currentRelationMembers)
+                .from(currentRelationMembers)
+                .where(currentRelationMembers.relationId.eq(relationIdsArr[3]))
+                .orderBy(currentRelationMembers.sequenceId.asc())
+                .fetch();
 
-                member = members.get(0);
+        assertEquals(1, members.size());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-                Assert.assertTrue((relationRecord.getTags() == null)
-                        || StringUtils.isEmpty(((PGobject) relationRecord.getTags()).getValue()));
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking relations: " + e.getMessage());
-            }
+        member = members.get(0);
 
-            try {
-                changeset = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(changesets)
-                        .where(changesets.id.eq(changesetId))
-                        .singleResult(changesets);
+        assertEquals(relationRecord.getId(), member.getRelationId());
+        assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+        assertEquals("role1", member.getMemberRole());
+        assertEquals(new Integer(1), member.getSequenceId());
+        assertEquals(nodeIdsArr[2], member.getMemberId());
+        assertTrue((relationRecord.getTags() == null)
+                || PostgresUtils.postgresObjToHStore(relationRecord.getTags()).isEmpty());
 
-                Assert.assertNotNull(changeset);
-                Assert.assertTrue(changeset.getCreatedAt().before(now));
-                Assert.assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
+        Changesets changeset = createQuery(mapId)
+                .select(changesets)
+                .from(changesets)
+                .where(changesets.id.eq(changesetId))
+                .fetchOne();
 
-                Assert.assertEquals(new Integer(13), changeset.getNumChanges());
-                Assert.assertEquals(new Long(userId), changeset.getUserId());
+        assertNotNull(changeset);
+        assertTrue(changeset.getCreatedAt().before(now));
+        assertTrue(changeset.getClosedAt().after(changeset.getCreatedAt()));
 
-                BoundingBox expandedBounds = new BoundingBox(originalBounds);
-                expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
-                Changeset hootChangeset = new Changeset(mapId, changesetId, conn);
-                BoundingBox changesetBounds = hootChangeset.getBounds();
-                Assert.assertEquals(changesetBounds, expandedBounds);
-            }
-            catch (Exception e) {
-                Assert.fail("Error checking updated changeset: " + e.getMessage());
-            }
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
-            throw e;
-        }
+        assertEquals(new Integer(13), changeset.getNumChanges());
+        assertEquals(new Long(userId), changeset.getUserId());
+
+        BoundingBox expandedBounds = new BoundingBox(originalBounds);
+        expandedBounds.expand(originalBounds, Double.parseDouble(CHANGESET_BOUNDS_EXPANSION_FACTOR_DEEGREES));
+        Changeset hootChangeset = new Changeset(mapId, changesetId);
+        BoundingBox changesetBounds = hootChangeset.getBounds();
+        assertEquals(changesetBounds, expandedBounds);
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = ClientErrorException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteNodeStillBelongsToWayWithoutIfUnused() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Try to delete a node that still belongs to a way when the "if-unused"
         // tag is not passed. A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete>" +
-                                "<node id=\"" + nodeIdsArr[1] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
-                                     "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                "</node>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete>" +
+                            "<node id=\"" + nodeIdsArr[1] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
+                                 "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                            "</node>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.PRECONDITION_FAILED, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("still used by other way(s)"));
-
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+        catch (ClientErrorException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.PRECONDITION_FAILED, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("still used by other way(s)"));
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = ClientErrorException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteNodeStillBelongsToRelationWithoutIfUnused() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelationsNoWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelationsNoWays(changesetId, nodeIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Try to delete a node that still belongs to a relation when the
         // "if-unused" tag is not passed.  A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete>" +
-                                "<node id=\"" + nodeIdsArr[0] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
-                                    "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
-                                "</node>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete>" +
+                            "<node id=\"" + nodeIdsArr[0] + "\" lon=\"" + originalBounds.getMinLon() + "\" " +
+                                "lat=\"" + originalBounds.getMinLat() + "\" version=\"1\" changeset=\"" + changesetId + "\">" +
+                            "</node>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
+        catch (ClientErrorException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.PRECONDITION_FAILED, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("still used by other relation(s)"));
+            OSMTestUtils.verifyTestChangesetUnmodified(changesetId, originalBounds);
+            OSMTestUtils.verifyTestNodesUnmodified(nodeIds, changesetId, originalBounds);
 
-            Assert.assertEquals(Status.PRECONDITION_FAILED, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("still used by other relation(s)"));
+            List<CurrentRelations> relations = createQuery(mapId)
+                    .select(currentRelations)
+                    .from(currentRelations)
+                    .orderBy(currentRelations.id.asc())
+                    .fetch();
 
-            QChangesets changesets = QChangesets.changesets;
+            assertEquals(3, relations.size());
 
-            new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                    .from(changesets)
-                    .where(changesets.id.eq(changesetId))
-                    .singleResult(changesets);
+            CurrentRelations relationRecord = relations.get(0);
+            assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+            assertEquals(relationIdsArr[0], relationRecord.getId());
 
-            OsmTestUtils.verifyTestChangesetUnmodified(changesetId, originalBounds);
-            OsmTestUtils.verifyTestNodesUnmodified(nodeIds, changesetId, originalBounds);
+            Timestamp now = super.getCurrentDBTime();
 
-            try {
-                List<CurrentRelations> relations = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationsTbl)
-                        .orderBy(currentRelationsTbl.id.asc())
-                        .list(currentRelationsTbl);
+            assertTrue(relationRecord.getTimestamp().before(now));
+            assertEquals(new Long(1), relationRecord.getVersion());
+            assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(3, relations.size());
+            List<CurrentRelationMembers> members =
+                    createQuery(mapId)
+                            .select(currentRelationMembers)
+                            .from(currentRelationMembers)
+                            .where(currentRelationMembers.relationId.eq(relationIdsArr[0]))
+                            .orderBy(currentRelationMembers.sequenceId.asc())
+                            .fetch();
 
-                CurrentRelations relationRecord = relations.get(0);
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[0], relationRecord.getId());
+            assertEquals(2, members.size());
 
-                Timestamp now = new Timestamp(Calendar.getInstance().getTimeInMillis());
+            CurrentRelationMembers member = members.get(0);
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+            assertEquals(relationRecord.getId(), member.getRelationId());
+            assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+            assertEquals("role1", member.getMemberRole());
+            assertEquals(new Integer(1), member.getSequenceId());
 
-                List<CurrentRelationMembers> members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[0]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+            assertEquals(nodeIdsArr[0], member.getMemberId());
 
-                Assert.assertEquals(2, members.size());
+            member = members.get(1);
 
-                CurrentRelationMembers member = members.get(0);
+            assertEquals(relationRecord.getId(), member.getRelationId());
+            assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+            assertEquals("", member.getMemberRole());
+            assertEquals(new Integer(2), member.getSequenceId());
+            assertEquals(nodeIdsArr[2], member.getMemberId());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
+            relationRecord = relations.get(1);
 
-                Assert.assertEquals(nodeIdsArr[0], member.getMemberId());
+            assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+            assertEquals(relationIdsArr[1], relationRecord.getId());
 
-                member = members.get(1);
+            assertTrue(relationRecord.getTimestamp().before(now));
+            assertEquals(new Long(1), relationRecord.getVersion());
+            assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
+            members = createQuery(mapId)
+                    .select(currentRelationMembers)
+                    .from(currentRelationMembers)
+                    .where(currentRelationMembers.relationId.eq(relationIdsArr[1]))
+                    .orderBy(currentRelationMembers.sequenceId.asc())
+                    .fetch();
 
-                relationRecord = relations.get(1);
+            assertEquals(2, members.size());
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[1], relationRecord.getId());
+            member = members.get(0);
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+            assertEquals(relationRecord.getId(), member.getRelationId());
+            assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+            assertEquals("role1", member.getMemberRole());
+            assertEquals(new Integer(1), member.getSequenceId());
+            assertEquals(nodeIdsArr[4], member.getMemberId());
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[1]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+            member = members.get(1);
 
-                Assert.assertEquals(2, members.size());
+            assertEquals(relationRecord.getId(), member.getRelationId());
+            assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
+            assertEquals("role1", member.getMemberRole());
+            assertEquals(new Integer(2), member.getSequenceId());
+            assertEquals(relationIdsArr[0], member.getMemberId());
 
-                member = members.get(0);
+            relationRecord = relations.get(2);
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[4], member.getMemberId());
+            assertEquals(new Long(changesetId), relationRecord.getChangesetId());
+            assertEquals(relationIdsArr[2], relationRecord.getId());
 
-                member = members.get(1);
+            assertTrue(relationRecord.getTimestamp().before(now));
+            assertEquals(new Long(1), relationRecord.getVersion());
+            assertTrue(relationRecord.getVisible());
 
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.relation, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(2), member.getSequenceId());
-                Assert.assertEquals(relationIdsArr[0], member.getMemberId());
+            members = createQuery(mapId)
+                    .select(currentRelationMembers)
+                    .from(currentRelationMembers)
+                    .where(currentRelationMembers.relationId.eq(relationIdsArr[2]))
+                    .orderBy(currentRelationMembers.sequenceId.asc())
+                    .fetch();
 
-                relationRecord = relations.get(2);
+            assertEquals(1, members.size());
 
-                Assert.assertEquals(new Long(changesetId), relationRecord.getChangesetId());
-                Assert.assertEquals(relationIdsArr[2], relationRecord.getId());
+            member = members.get(0);
 
-                Assert.assertTrue(relationRecord.getTimestamp().before(now));
-                Assert.assertEquals(new Long(1), relationRecord.getVersion());
-                Assert.assertTrue(relationRecord.getVisible());
+            assertEquals(relationRecord.getId(), member.getRelationId());
+            assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
+            assertEquals("role1", member.getMemberRole());
+            assertEquals(new Integer(1), member.getSequenceId());
+            assertEquals(nodeIdsArr[2], member.getMemberId());
 
-                members = new SQLQuery(conn, DbUtils.getConfiguration(mapId))
-                        .from(currentRelationMembersTbl)
-                        .where(currentRelationMembersTbl.relationId.eq(relationIdsArr[2]))
-                        .orderBy(currentRelationMembersTbl.sequenceId.asc())
-                        .list(currentRelationMembersTbl);
+            OSMTestUtils.verifyTestRelationsNoWaysUnmodified(relationIds, nodeIds, changesetId, true);
 
-                Assert.assertEquals(1, members.size());
-
-                member = members.get(0);
-
-                Assert.assertEquals(relationRecord.getId(), member.getRelationId());
-                Assert.assertEquals(DbUtils.nwr_enum.node, member.getMemberType());
-                Assert.assertEquals("role1", member.getMemberRole());
-                Assert.assertEquals(new Integer(1), member.getSequenceId());
-                Assert.assertEquals(nodeIdsArr[2], member.getMemberId());
-            }
-            catch (Exception e2) {
-                Assert.fail("Error checking relations: " + e2.getMessage());
-            }
-
-            OsmTestUtils.verifyTestRelationsNoWaysUnmodified(relationIds, nodeIds, changesetId, true);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = ClientErrorException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteWayStillBelongsToRelationWithoutIfUnused() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
         Long[] wayIdsArr = wayIds.toArray(new Long[wayIds.size()]);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Try to delete a way that still belongs to a relation when the
         // "if-unused" tag is not passed. A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete>" +
-                                "<way id=\"" + wayIdsArr[1] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete>" +
+                            "<way id=\"" + wayIdsArr[1] + "\" version=\"1\" changeset=\"" + changesetId + "\">" + "</way>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.PRECONDITION_FAILED, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("still used by other relation(s)"));
-
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+        catch (ClientErrorException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.PRECONDITION_FAILED, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("still used by other relation(s)"));
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = ClientErrorException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteRelationStillBelongsToRelationWithoutIfUnused() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
         Long[] relationIdsArr = relationIds.toArray(new Long[relationIds.size()]);
 
         // Try to delete a relation that still belongs to a relation when the
         // "if-unused" tag is not passed. A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete>" +
-                                "<relation id=\"" + relationIdsArr[0] + "\" version=\"1\" changeset=\"" +
-                                    changesetId + "\">" +
-                                "</relation>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete>" +
+                            "<relation id=\"" + relationIdsArr[0] + "\" version=\"1\" changeset=\"" +
+                                changesetId + "\">" +
+                            "</relation>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.PRECONDITION_FAILED, Status.fromStatusCode(r.getStatus()));
-            Assert.assertTrue(r.getEntity(String.class).contains("still used by other relation(s)"));
-
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+        catch (ClientErrorException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.PRECONDITION_FAILED, Response.Status.fromStatusCode(r.getStatus()));
+            assertTrue(r.readEntity(String.class).contains("still used by other relation(s)"));
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = BadRequestException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteRelationEmptyMemberId() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Update the changeset where one of the relations has a member with an
         // empty string for an ID.  A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML).accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\"/>" +
-                                "<relation id=\"-1\" version=\"0\" changeset=\"" + changesetId + "\" >" +
-                                    "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
-                                    "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
-                                "</relation>" +
-                                "<relation id=\"-2\" version=\"0\" changeset=\"" + changesetId + "\" >" +
-                                    "<member type=\"node\" role=\"role1\" ref=\"\"></member>" + // empty member ID
-                                    "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
-                                "</relation>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+            .queryParam("mapId", String.valueOf(mapId))
+            .request(MediaType.TEXT_XML)
+            .post(Entity.entity(
+                "<osmChange version=\"0.3\" generator=\"iD\">" +
+                    "<create/>" +
+                    "<modify/>" +
+                    "<delete if-unused=\"true\"/>" +
+                        "<relation id=\"-1\" version=\"0\" changeset=\"" + changesetId + "\" >" +
+                            "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[0] + "\"></member>" +
+                            "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
+                        "</relation>" +
+                        "<relation id=\"-2\" version=\"0\" changeset=\"" + changesetId + "\" >" +
+                            "<member type=\"node\" role=\"role1\" ref=\"\"></member>" + // empty member ID
+                            "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
+                        "</relation>" +
+                    "</delete>" +
+                "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.BAD_REQUEST, Status.fromStatusCode(r.getStatus()));
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+        catch (BadRequestException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.BAD_REQUEST, Response.Status.fromStatusCode(r.getStatus()));
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }
 
-    @Test(expected = UniformInterfaceException.class)
+    @Test(expected = BadRequestException.class)
     @Category(UnitTest.class)
     public void testUploadDeleteRelationMissingMemberId() throws Exception {
-        BoundingBox originalBounds = OsmTestUtils.createStartingTestBounds();
-        long changesetId = OsmTestUtils.createTestChangeset(originalBounds);
-        Set<Long> nodeIds = OsmTestUtils.createTestNodes(changesetId, originalBounds);
+        BoundingBox originalBounds = OSMTestUtils.createStartingTestBounds();
+        long changesetId = OSMTestUtils.createTestChangeset(originalBounds);
+        Set<Long> nodeIds = OSMTestUtils.createTestNodes(changesetId, originalBounds);
         Long[] nodeIdsArr = nodeIds.toArray(new Long[nodeIds.size()]);
-        Set<Long> wayIds = OsmTestUtils.createTestWays(changesetId, nodeIds);
-        Set<Long> relationIds = OsmTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
+        Set<Long> wayIds = OSMTestUtils.createTestWays(changesetId, nodeIds);
+        Set<Long> relationIds = OSMTestUtils.createTestRelations(changesetId, nodeIds, wayIds);
 
         // Update the changeset with a relation that has a member with a missing
         // ID attribute. A failure should occur and no data in the system should be modified.
         try {
-            resource()
-                    .path("api/0.6/changeset/" + changesetId + "/upload")
-                    .queryParam("mapId", String.valueOf(mapId))
-                    .type(MediaType.TEXT_XML)
-                    .accept(MediaType.TEXT_XML)
-                    .post(Document.class,
-                        "<osmChange version=\"0.3\" generator=\"iD\">" +
-                            "<create/>" +
-                            "<modify/>" +
-                            "<delete if-unused=\"true\"/>" +
-                                "<relation id=\"-1\" version=\"0\" changeset=\"" + changesetId + "\" >" +
-                                    "<member type=\"node\" role=\"role1\"\"></member>" +
-                                    "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
-                                "</relation>" +
-                                "<relation id=\"-2\" version=\"0\" changeset=\"" + changesetId + "\" >" +
-                                    "<member type=\"node\" role=\"role1\"></member>" + // mising member ID
-                                    "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
-                                "</relation>" +
-                            "</delete>" +
-                        "</osmChange>");
+            target("api/0.6/changeset/" + changesetId + "/upload")
+                .queryParam("mapId", String.valueOf(mapId))
+                .request(MediaType.TEXT_XML)
+                .post(Entity.entity(
+                    "<osmChange version=\"0.3\" generator=\"iD\">" +
+                        "<create/>" +
+                        "<modify/>" +
+                        "<delete if-unused=\"true\"/>" +
+                            "<relation id=\"-1\" version=\"0\" changeset=\"" + changesetId + "\" >" +
+                                "<member type=\"node\" role=\"role1\"\"></member>" +
+                                "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
+                            "</relation>" +
+                            "<relation id=\"-2\" version=\"0\" changeset=\"" + changesetId + "\" >" +
+                                "<member type=\"node\" role=\"role1\"></member>" + // mising member ID
+                                "<member type=\"node\" role=\"role1\" ref=\"" + nodeIdsArr[1] + "\"></member>" +
+                            "</relation>" +
+                        "</delete>" +
+                    "</osmChange>", MediaType.TEXT_XML_TYPE), Document.class);
         }
-        catch (UniformInterfaceException e) {
-            ClientResponse r = e.getResponse();
-            Assert.assertEquals(Status.BAD_REQUEST, Status.fromStatusCode(r.getStatus()));
-
-            OsmTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
-
-            throw e;
-        }
-        catch (Exception e) {
-            log.error(e.getMessage());
+        catch (BadRequestException e) {
+            Response r = e.getResponse();
+            assertEquals(Response.Status.BAD_REQUEST, Response.Status.fromStatusCode(r.getStatus()));
+            OSMTestUtils.verifyTestDataUnmodified(originalBounds, changesetId, nodeIds, wayIds, relationIds);
             throw e;
         }
     }

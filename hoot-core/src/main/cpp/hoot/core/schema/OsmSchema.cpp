@@ -5,7 +5,7 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -126,7 +126,7 @@ template<>
             pair<hoot::VertexId, hoot::VertexId>(k.vid1, k.vid2));
       size_t h2 = fastHashDouble()(k.w1);
       size_t h3 = fastHashDouble()(k.w2);
-      return cantorPairing(h1, cantorPairing(h2, h3));
+      return Tgs::cantorPairing(h1, Tgs::cantorPairing(h2, h3));
     }
   };
 }
@@ -460,6 +460,18 @@ public:
       result.push_back(_graph[it.value()]);
     }
 
+    return result;
+  }
+
+  QSet<QString> getAllTagKeys()
+  {
+    QSet<QString> result;
+    result.reserve(_name2Vertex.size());
+    for (QHash<QString, VertexId>::const_iterator it = _name2Vertex.begin();
+      it != _name2Vertex.end(); ++it)
+    {
+      result.insert(it.key());
+    }\
     return result;
   }
 
@@ -1376,6 +1388,11 @@ void OsmSchema::createTestingGraph()
 vector<SchemaVertex> OsmSchema::getAllTags()
 {
   return d->getAllTags();
+}
+
+QSet<QString> OsmSchema::getAllTagKeys()
+{
+  return d->getAllTagKeys();
 }
 
 vector<SchemaVertex> OsmSchema::getAssociatedTags(QString name)

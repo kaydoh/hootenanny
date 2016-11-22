@@ -34,6 +34,7 @@ mgcp.rules = {
     // FCODE rules for Import
     fcodeOne2oneInV3 : [
         // MGCP TRDv3 Only Fcodes
+        ['F_CODE','AL015','building','yes'], // Building - changed to AL013
         ['F_CODE','AL100','building','hut'], // Hut - NFDD AL099
         ['F_CODE','AL240','man_made','tower'], // Non-communication Tower - NFDD AL241
         ['F_CODE','AQ064','man_made','causeway'], // Causeway - NFDD AQ063
@@ -47,8 +48,8 @@ mgcp.rules = {
         // MGCP TRDv4 Only FCODES
         // These are used for both import and export
         ['F_CODE','AA012','landuse','quarry'], // Quarry - NFDD AA010
-        ['F_CODE','AA050','man_made','water_well'], // Well - NFDD BH230
-        ['F_CODE','AC000','facility','yes'], // Processing Facility - NFDD AN010
+        ['F_CODE','AA050','man_made','water_well'], // Well - NFDD BH230 or AA054
+        ['F_CODE','AC000','facility','processing'], // Processing Facility - NFDD AL010
         ['F_CODE','AH050','site:type','fortification'], // Fortification - FCODE Retired
         ['F_CODE','AJ010','farm:irrigation','centre_pivot'], // Circular Irrigation System - FCODE Retired
         ['F_CODE','AK190','man_made','recreational_pier'], // Recreational Pier - NFDD BB081
@@ -82,10 +83,6 @@ mgcp.rules = {
         ['F_CODE','AK120','landuse','recreation_ground'], // From OSM - PArk, not great
         ['F_CODE','AL015','building','yes'], // To fix amenity etc
         ['F_CODE','AL015','tourism','hotel'], // To fix amenity etc
-        // ['F_CODE','AL020','place','city'], // From OSM
-        ['F_CODE','AL020','landuse','residential'], // From OSM Data
-        ['F_CODE','AL020','landuse','commercial'], // From OSM Data
-        ['F_CODE','AL020','landuse','industrial'], // From OSM Data
         ['F_CODE','AL030','amenity','grave_yard'], // From OSM Data
         ['F_CODE','AL105','tourism','caravan_site'], // From OSM data, not a building so...
         ['F_CODE','AL130','tourism','attraction'], // From OSM data, not great
@@ -97,6 +94,7 @@ mgcp.rules = {
         ['F_CODE','BB190','man_made','pier'], // From OSM
         ['F_CODE','BH080','landuse','basin'], // From OSM - Lake is close but not great
         ['F_CODE','BH130','landuse','reservoir'], // From OSM
+        ['F_CODE','BH130','water','reservoir'], // From OSM
         // ['F_CODE','ZD040','place','state'], // From OSM
         // ['F_CODE','ZD040','place','county'], // From OSM
         // ['F_CODE','ZD040','place','quarter'], // From OSM
@@ -121,14 +119,15 @@ mgcp.rules = {
         'NFI':'gndb_id:2', // Named Feature Identifier. Not sure how this is different to NFN
         'NFN':'gndb_id', // Name Identifier
         'RTN':'ref',  // Route Designation
-        'SDP':'source:description', // Source Description
+        //'SDP':'source:description', // Source Description
+        'SDP':'source', // Source Description
         'SDV':'source:datetime', // Source Date and Time
         'TIER_NOTE':'source:commercial_distribution_restriction', // Commercial Distribution Restriction       
         'TXT':'note', // Associated Text
         'UID':'uuid', // Universally Unique Identifier
         'UPD_DATE':'source:update:datetime', // Review Source Date and Time
         'UPD_INFO':'source:update:description', // Review Source Description
-        'VOI':'aeroway:obstruction', // Vertical Obstruction Identifier
+        'VOI':'vertical_obstruction_identifier', // Vertical Obstruction Identifier
         }, // End txtBiased
 
     // One2one rules for Number attributes
@@ -920,7 +919,7 @@ mgcp.rules = {
         ['SCC','1','water:type','alkaline'],
         ['SCC','4','water:type','mineral'],
         ['SCC','9','water:type','potable'],
-        ['SCC','10','water:type','salty'],
+        ['SCC','10','water:type','salt'],
         ['SCC','11','water:type','fresh'], // Fresh 
         ['SCC','12','water:type','brackish'], // Brackish 
         // ['SCC','998',undefined,undefined],
@@ -941,8 +940,8 @@ mgcp.rules = {
         // SEP - Divided
         // ['SEP','0','divider','unknown'], 
         ['SEP','0',undefined,undefined], 
-        ['SEP','1000','divider','no'], 
-        ['SEP','1001','divider','yes'], 
+        ['SEP','1000','is_divided','no'],
+        ['SEP','1001','is_divided','yes'],
 
         // SFS - Aerodrome Pavement Functional 
         //['SFS','0','aeroway:pavement_status','unknown'], // Unknown 
@@ -2340,8 +2339,6 @@ mgcp.rules = {
     // This list is for validateing the integer attributes prior to export
     intList : ['LTN','NOS'],
     // ##### End of intList#####
-
-
 
 } // End of mgcp.rules
 

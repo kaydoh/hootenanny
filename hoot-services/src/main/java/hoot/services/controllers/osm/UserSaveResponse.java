@@ -26,14 +26,17 @@
  */
 package hoot.services.controllers.osm;
 
-import javax.xml.bind.annotation.XmlRootElement;
-
-import hoot.services.db2.Users;
+import hoot.services.models.db.Users;
 
 
-@XmlRootElement
 public class UserSaveResponse {
     private Users user;
+
+    public UserSaveResponse() {}
+
+    public UserSaveResponse(Users u) {
+        user = u;
+    }
 
     public Users getUser() {
         return user;
@@ -41,13 +44,5 @@ public class UserSaveResponse {
 
     public void setUser(Users u) {
         user = u;
-    }
-
-    public UserSaveResponse(Users u) {
-        user = u;
-    }
-
-    public UserSaveResponse() {
-
     }
 }

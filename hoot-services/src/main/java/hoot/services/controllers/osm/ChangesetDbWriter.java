@@ -22,23 +22,28 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 package hoot.services.controllers.osm;
 
 import static hoot.services.HootProperties.*;
+import static hoot.services.models.db.QCurrentNodes.currentNodes;
+import static hoot.services.models.db.QCurrentRelations.currentRelations;
+import static hoot.services.models.db.QCurrentWays.currentWays;
+import static hoot.services.utils.DbUtils.createQuery;
 
-import java.lang.reflect.InvocationTargetException;
-import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import javax.xml.parsers.ParserConfigurationException;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.xpath.XPathAPI;
@@ -49,23 +54,30 @@ import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
-import com.mysema.query.sql.RelationalPathBase;
-import com.mysema.query.sql.SQLExpressions;
-import com.mysema.query.sql.SQLQuery;
+import com.querydsl.core.types.Predicate;
+import com.querydsl.core.types.dsl.BooleanExpression;
+import com.querydsl.core.types.dsl.Expressions;
+import com.querydsl.sql.RelationalPathBase;
+import com.querydsl.sql.SQLExpressions;
+import com.querydsl.sql.dml.SQLDeleteClause;
+import com.querydsl.sql.dml.SQLInsertClause;
+import com.querydsl.sql.dml.SQLUpdateClause;
 
-import hoot.services.utils.DbUtils;
-import hoot.services.utils.DbUtils.EntityChangeType;
-import hoot.services.utils.DbUtils.RecordBatchType;
-import hoot.services.db2.CurrentNodes;
-import hoot.services.db2.QCurrentRelationMembers;
-import hoot.services.db2.QCurrentWayNodes;
-import hoot.services.exceptions.osm.OSMAPIPreconditionException;
 import hoot.services.geo.BoundingBox;
+import hoot.services.models.db.CurrentNodes;
+import hoot.services.models.db.CurrentRelations;
+import hoot.services.models.db.CurrentWays;
+import hoot.services.models.db.QCurrentRelationMembers;
+import hoot.services.models.db.QCurrentWayNodes;
 import hoot.services.models.osm.Changeset;
 import hoot.services.models.osm.Element;
 import hoot.services.models.osm.Element.ElementType;
 import hoot.services.models.osm.ElementFactory;
+import hoot.services.models.osm.OSMAPIAlreadyDeletedException;
+import hoot.services.models.osm.OSMAPIPreconditionException;
 import hoot.services.models.osm.XmlSerializable;
+import hoot.services.utils.DbUtils.EntityChangeType;
+import hoot.services.utils.DbUtils.RecordBatchType;
 import hoot.services.utils.XmlDocumentBuilder;
 
 
@@ -81,13 +93,12 @@ import hoot.services.utils.XmlDocumentBuilder;
  * intuitive, unfortunately, but hopefully should result in increased write
  * performance.
  * <p>
+ *
  * //TODO: All element type specific db writing code should be made generic
- * again like it was before the jooq to querydsl conversion.
+ * //TODO: again like it was before the jooq to querydsl conversion.
  */
 public class ChangesetDbWriter {
     private static final Logger logger = LoggerFactory.getLogger(ChangesetDbWriter.class);
-
-    private final Connection conn;
 
     private int maxRecordBatchSize = -1;
     private BoundingBox diffBounds; // bounds calculated from the diff request data
@@ -128,14 +139,7 @@ public class ChangesetDbWriter {
         return parsedElementIdsToElementsByType;
     }
 
-    /**
-     * Constructor
-     *
-     * @param conn
-     *            JDBC Connection
-     */
-    public ChangesetDbWriter(Connection conn) {
-        this.conn = conn;
+    public ChangesetDbWriter() {
         maxRecordBatchSize = Integer.parseInt(MAX_RECORD_BATCH_SIZE);
     }
 
@@ -153,12 +157,11 @@ public class ChangesetDbWriter {
      */
     private static long getNewElementId(long oldElementId, long nextElementId, EntityChangeType entityChangeType,
             int elementCtr) {
-        long newElementId = (entityChangeType == EntityChangeType.CREATE) ? (nextElementId + elementCtr) : oldElementId;
-        return newElementId;
+        return (entityChangeType == EntityChangeType.CREATE) ? (nextElementId + elementCtr) : oldElementId;
     }
 
     private long getOldElementId(NamedNodeMap nodeAttributes, EntityChangeType entityChangeType,
-            List<Long> oldElementIds) throws Exception {
+            List<Long> oldElementIds) {
         long oldElementId = Long.parseLong(nodeAttributes.getNamedItem("id").getNodeValue());
 
         // make sure request has no duplicate IDs for new elements
@@ -166,21 +169,22 @@ public class ChangesetDbWriter {
         // updating the same node twice could be allowed (not sure if rails port does), but I'm
         // going to not allow that for now.
         if (oldElementIds.contains(oldElementId)) {
-            throw new Exception("Duplicate OSM element ID: " + oldElementId + " in changeset " + requestChangesetId);
+            throw new IllegalArgumentException("Duplicate OSM element ID: " + oldElementId +
+                    " in changeset " + requestChangesetId);
         }
 
         if (entityChangeType == EntityChangeType.CREATE) {
             // by convention, new element IDs should have a negative value
             if (oldElementId >= 0) {
-                throw new Exception("Invalid OSM element ID for create: " + oldElementId + " for " + "changeset: "
-                        + requestChangesetId + ".  Use a negative ID value.");
+                throw new IllegalArgumentException("Invalid OSM element ID for create: " +
+                        oldElementId + " for " + "changeset: " + requestChangesetId + ".  Use a negative ID value.");
             }
         }
 
         // Formerly, we had a setting called
         // "hootCoreServicesDatabaseWriterCompatibility" that would
         // have to be turned on to allow nodes with negative ID's to be written,
-        // which was to accomodate the behavior of hoot --convert. If it wasn't turned on, a failure
+        // which was to accommodate the behavior of hoot --convert. If it wasn't turned on, a failure
         // would occur here. Now, by default the writing nodes with negative ID's is always allowed.
         oldElementIds.add(oldElementId);
 
@@ -200,12 +204,11 @@ public class ChangesetDbWriter {
      *            type of request database change to be performed on the
      *            elements
      * @return an element
-     * @throws Exception
      */
     private Element parseElement(Node xml, long oldId, long newId, ElementType elementType,
-            EntityChangeType entityChangeType) throws Exception {
+            EntityChangeType entityChangeType) {
 
-        Element element = ElementFactory.create(requestChangesetMapId, elementType, conn);
+        Element element = ElementFactory.create(requestChangesetMapId, elementType);
         element.setId(newId);
         element.setOldId(oldId);
         element.setRequestChangesetId(requestChangesetId);
@@ -230,29 +233,32 @@ public class ChangesetDbWriter {
         return element;
     }
 
-    private long getNextElementId(ElementType elementType) throws InstantiationException, IllegalAccessException,
-            ClassNotFoundException, NoSuchMethodException, InvocationTargetException {
+    private long getNextElementId(ElementType elementType) {
 
-        long nextElementId = new SQLQuery(conn, DbUtils.getConfiguration(requestChangesetMapId))
-                .uniqueResult(SQLExpressions.nextval(Long.class, "current_" + elementType.toString().toLowerCase()
-                        + "s_" + requestChangesetMapId + "_id_seq"));
+        long nextElementId = createQuery(requestChangesetMapId)
+                .select(SQLExpressions.nextval(Long.class,
+                        "current_" + elementType.toString().toLowerCase() + "s_" + requestChangesetMapId + "_id_seq"))
+                .fetchOne();
 
         // This is a bigtime hack put in place b/c I was getting dupe
         // IDs...really needs to be fixed; I need to generate the IDs myself, rather than letting the db
         // do it automatically, so I have the new IDs to send back in the changeset upload
         // response...there might be a way to let the db auto-gen them and then return those, but I'm not sure
         // how that would work yet.
-        Element prototypeElement = ElementFactory.create(requestChangesetMapId, elementType, conn);
+        Element prototypeElement = ElementFactory.create(requestChangesetMapId, elementType);
 
         // THIS SHOULD NEVER HAPPEN!!
-        boolean recordExistsWithSameId = new SQLQuery(conn, DbUtils.getConfiguration(requestChangesetMapId))
-                .from(prototypeElement.getElementTable()).where(prototypeElement.getElementIdField().eq(nextElementId))
-                .singleResult(prototypeElement.getElementTable()) != null;
+        boolean recordExistsWithSameId = createQuery(requestChangesetMapId)
+                .from(prototypeElement.getElementTable())
+                .where(prototypeElement.getElementIdField().eq(nextElementId))
+                .fetchCount() > 0;
 
         if (recordExistsWithSameId) {
-            long highestElementId = new SQLQuery(conn, DbUtils.getConfiguration(requestChangesetMapId))
-                    .from(prototypeElement.getElementTable()).orderBy(prototypeElement.getElementIdField().desc())
-                    .singleResult(prototypeElement.getElementIdField());
+            long highestElementId = createQuery(requestChangesetMapId)
+                    .select(prototypeElement.getElementIdField())
+                    .from(prototypeElement.getElementTable())
+                    .orderBy(prototypeElement.getElementIdField().desc())
+                    .fetchFirst();
 
             nextElementId = highestElementId + 1;
         }
@@ -274,27 +280,21 @@ public class ChangesetDbWriter {
      * @param deleteIfUnused
      *            see description in writeDiff
      * @return collection of elements corresponding to the records to be updated
-     * @throws Exception
+     * @throws OSMAPIPreconditionException
+     * @throws OSMAPIAlreadyDeletedException
      */
     private List<Element> parseElements(NodeList xml, ElementType elementType, EntityChangeType entityChangeType,
-            boolean deleteIfUnused) throws Exception {
-        logger.debug("Parsing elements...");
-
+            boolean deleteIfUnused) throws OSMAPIPreconditionException, OSMAPIAlreadyDeletedException {
         long nextElementId = -1;
 
         // no need to get the next element ID from the database unless we are creating a new one
         if ((entityChangeType == EntityChangeType.CREATE) && (elementType != ElementType.Changeset)) {
-            try {
-                nextElementId = getNextElementId(elementType);
-            }
-            catch (Exception e) {
-                throw new Exception("Error retrieving next new element ID for element type: " + elementType
-                        + " for changeset: " + requestChangesetId + " (" + e.getMessage() + ")", e);
-            }
+            nextElementId = getNextElementId(elementType);
         }
 
         List<Element> changesetDiffElements = new ArrayList<>();
         List<Long> oldElementIds = new ArrayList<>();
+
         for (int i = 0; i < xml.getLength(); i++) {
             Node xmlElement = xml.item(i);
             NamedNodeMap xmlAttributes = xmlElement.getAttributes();
@@ -329,6 +329,9 @@ public class ChangesetDbWriter {
                         throw e; // re-throw the error since 'if-unused' is not specified.
                     }
                 }
+                catch (OSMAPIAlreadyDeletedException e) {
+                    throw e;
+                }
             }
 
             // update the parsed element cache; this allows us to keep track of
@@ -357,6 +360,7 @@ public class ChangesetDbWriter {
             if (diffBounds == null) {
                 diffBounds = new BoundingBox(); // I think this is wrong
             }
+
             BoundingBox elementBounds = element.getBounds();
 
             // null check here if for relations that only contain members of
@@ -390,17 +394,16 @@ public class ChangesetDbWriter {
      * @param changesetDoc
      *            changeset contents
      * @return changeset upload response
-     * @throws Exception
      */
     public Document write(long mapId, long changesetId, Document changesetDoc) throws Exception {
         logger.debug("Uploading data for changeset with ID: {} ...", changesetId);
 
-        changeset = new Changeset(mapId, changesetId, conn);
+        changeset = new Changeset(mapId, changesetId);
         this.requestChangesetId = changeset.getId();
         changeset.verifyAvailability();
 
         if (changeset.requestChangesExceedMaxElementThreshold(changesetDoc)) {
-            throw new Exception("Changeset maximum element threshold exceeded.");
+            throw new RuntimeException("Changeset maximum element threshold exceeded.");
         }
 
         requestChangesetMapId = mapId;
@@ -430,7 +433,6 @@ public class ChangesetDbWriter {
      * @param changeset
      *            changeset contents
      * @return changeset upload response
-     * @throws Exception
      */
     public Document write(long mapId, long changesetId, String changeset) throws Exception {
         Document changesetDoc;
@@ -438,8 +440,8 @@ public class ChangesetDbWriter {
             changesetDoc = ChangesetUploadXmlValidator.parseAndValidate(changeset);
         }
         catch (Exception e) {
-            throw new Exception("Error parsing changeset diff data: " + StringUtils.abbreviate(changeset, 100) + " ("
-                    + e.getMessage() + ")", e);
+            throw new RuntimeException("Error parsing changeset diff data: " +
+                    StringUtils.abbreviate(changeset, 100) + " (" + e.getMessage() + ")", e);
         }
 
         return write(mapId, changesetId, changesetDoc);
@@ -448,8 +450,7 @@ public class ChangesetDbWriter {
     private List<Element> write(Document changesetDoc) throws Exception {
         logger.debug(XmlDocumentBuilder.toString(changesetDoc));
 
-        ChangesetErrorChecker changesetErrorChecker = new ChangesetErrorChecker(changesetDoc, requestChangesetMapId,
-                conn);
+        ChangesetErrorChecker changesetErrorChecker = new ChangesetErrorChecker(changesetDoc, requestChangesetMapId);
         dbNodeCache = changesetErrorChecker.checkForElementExistenceErrors();
         changesetErrorChecker.checkForVersionErrors();
         changesetErrorChecker.checkForElementVisibilityErrors();
@@ -518,37 +519,30 @@ public class ChangesetDbWriter {
                             // me for relations). Any related elements to be created/retained specified in the
                             // request have already been added to relatedRecordsToStore and will be inserted into
                             // the db following this.
-                            Element prototypeElement = ElementFactory.create(requestChangesetMapId,
-                                    elementType, conn);
+                            Element prototypeElement = ElementFactory.create(requestChangesetMapId, elementType);
 
                             // Elements which don't have related elements, will return a null for the
                             // relatedRecordType.
                             RelationalPathBase<?> relatedRecordTable = prototypeElement.getRelatedRecordTable();
                             Element.removeRelatedRecords(requestChangesetMapId, relatedRecordTable,
                                     prototypeElement.getRelatedRecordJoinField(), parsedElementIds,
-                                    relatedRecordTable != null, conn);
+                                    relatedRecordTable != null);
                         }
 
-                        // TODO: really need to be flushing these batch
-                        // executions after they get to be a certain
-                        // size to avoid memory problems; see maxRecordBatchSize
-
-                        // TODO: make this code element generic; reinstate the
-                        // DbSerializable interface??
+                        // TODO: really need to be flushing these batch executions after they get
+                        // TODO: to be a certain size to avoid memory problems; see maxRecordBatchSize
+                        // TODO: make this code element generic; reinstate the DbSerializable interface??
                         if (elementType == ElementType.Node) {
-                            DbUtils.batchRecordsDirectNodes(requestChangesetMapId, recordsToModify,
-                                    DbUtils.recordBatchTypeForEntityChangeType(entityChangeType), conn,
-                                    maxRecordBatchSize);
+                            batchRecordsDirectNodes(requestChangesetMapId, recordsToModify,
+                                    recordBatchTypeForEntityChangeType(entityChangeType), maxRecordBatchSize);
                         }
                         else if (elementType == ElementType.Way) {
-                            DbUtils.batchRecordsDirectWays(requestChangesetMapId, recordsToModify,
-                                    DbUtils.recordBatchTypeForEntityChangeType(entityChangeType), conn,
-                                    maxRecordBatchSize);
+                            batchRecordsDirectWays(requestChangesetMapId, recordsToModify,
+                                    recordBatchTypeForEntityChangeType(entityChangeType), maxRecordBatchSize);
                         }
                         else if (elementType == ElementType.Relation) {
-                            DbUtils.batchRecordsDirectRelations(requestChangesetMapId, recordsToModify,
-                                    DbUtils.recordBatchTypeForEntityChangeType(entityChangeType), conn,
-                                    maxRecordBatchSize);
+                            batchRecordsDirectRelations(requestChangesetMapId, recordsToModify,
+                                    recordBatchTypeForEntityChangeType(entityChangeType), maxRecordBatchSize);
                         }
 
                         // make the database updates for the element records
@@ -562,23 +556,23 @@ public class ChangesetDbWriter {
                         // DbSerializable interface??
                         if ((relatedRecordsToStore != null) && (!relatedRecordsToStore.isEmpty())) {
                             if (elementType == ElementType.Node) {
-                                DbUtils.batchRecordsDirectNodes(requestChangesetMapId, relatedRecordsToStore,
-                                        RecordBatchType.INSERT, conn, maxRecordBatchSize);
+                                batchRecordsDirectNodes(requestChangesetMapId, relatedRecordsToStore,
+                                        RecordBatchType.INSERT, maxRecordBatchSize);
                             }
                             else if (elementType == ElementType.Way) {
-                                DbUtils.batchRecords(requestChangesetMapId, relatedRecordsToStore,
-                                        QCurrentWayNodes.currentWayNodes, null, RecordBatchType.INSERT, conn,
+                                batchRecords(requestChangesetMapId, relatedRecordsToStore,
+                                        QCurrentWayNodes.currentWayNodes, null, RecordBatchType.INSERT,
                                         maxRecordBatchSize);
                             }
                             else if (elementType == ElementType.Relation) {
-                                DbUtils.batchRecords(requestChangesetMapId, relatedRecordsToStore,
+                                batchRecords(requestChangesetMapId, relatedRecordsToStore,
                                         QCurrentRelationMembers.currentRelationMembers, null, RecordBatchType.INSERT,
-                                        conn, maxRecordBatchSize);
+                                        maxRecordBatchSize);
                             }
                             relatedRecordsToStore.clear();
                         }
                     }
-                }
+                  }
             }
         }
 
@@ -606,13 +600,10 @@ public class ChangesetDbWriter {
      * @return a changeset upload response XML document
      */
     private static Document writeResponse(long changesetId, List<XmlSerializable> changesetDiffElements)
-            throws Exception {
-        logger.debug("Building response...");
-
+            throws ParserConfigurationException {
         Document responseDoc = XmlDocumentBuilder.create();
 
         org.w3c.dom.Element osmElement = OsmResponseHeaderGenerator.getOsmDataHeader(responseDoc);
-
         org.w3c.dom.Element diffResultXmlElement = responseDoc.createElement("diffResult");
 
         diffResultXmlElement.setAttribute("generator", GENERATOR);
@@ -626,5 +617,201 @@ public class ChangesetDbWriter {
         responseDoc.appendChild(osmElement);
 
         return responseDoc;
+    }
+
+    /**
+     * Returns a record batch type given the corresponding entity change type
+     *
+     * @param entityChangeType
+     *            an entity change type
+     * @return a record batch type
+     */
+    private static RecordBatchType recordBatchTypeForEntityChangeType(EntityChangeType entityChangeType) {
+        RecordBatchType recordBatchType = null;
+
+        switch (entityChangeType) {
+            case CREATE:
+                recordBatchType = RecordBatchType.INSERT;
+                break;
+
+            case MODIFY:
+                recordBatchType = RecordBatchType.UPDATE;
+                break;
+
+            case DELETE:
+                recordBatchType = RecordBatchType.DELETE;
+                break;
+        }
+
+        return recordBatchType;
+    }
+
+    private static long batchRecordsDirectRelations(long mapId, List<?> records, RecordBatchType recordBatchType,
+            int maxRecordBatchSize) {
+
+        if (recordBatchType == RecordBatchType.INSERT) {
+            return batchRecords(mapId, records, currentRelations, null, RecordBatchType.INSERT, maxRecordBatchSize);
+        }
+        else if (recordBatchType == RecordBatchType.UPDATE) {
+            List<List<BooleanExpression>> predicateList = new LinkedList<>();
+            for (Object o : records) {
+                CurrentRelations relation = (CurrentRelations) o;
+                predicateList.add(Collections.singletonList(Expressions.asBoolean(currentRelations.id.eq(relation.getId()))));
+            }
+
+            return batchRecords(mapId, records, currentRelations, predicateList, RecordBatchType.UPDATE, maxRecordBatchSize);
+        }
+        else { //recordBatchType == RecordBatchType.DELETE
+            List<List<BooleanExpression>> predicateList = new LinkedList<>();
+            for (Object o : records) {
+                CurrentRelations relation = (CurrentRelations) o;
+                predicateList.add(Collections.singletonList(Expressions.asBoolean(currentRelations.id.eq(relation.getId()))));
+            }
+
+            return batchRecords(mapId, records, currentRelations, predicateList, RecordBatchType.DELETE, maxRecordBatchSize);
+        }
+    }
+
+    private static long batchRecordsDirectWays(long mapId, List<?> records,
+            RecordBatchType recordBatchType, int maxRecordBatchSize) {
+
+        if (recordBatchType == RecordBatchType.INSERT) {
+            return batchRecords(mapId, records, currentWays, null, RecordBatchType.INSERT, maxRecordBatchSize);
+        }
+        else if (recordBatchType == RecordBatchType.UPDATE) {
+            List<List<BooleanExpression>> predicateList = new LinkedList<>();
+            for (Object o : records) {
+                CurrentWays way = (CurrentWays) o;
+                predicateList.add(Collections.singletonList(Expressions.asBoolean(currentWays.id.eq(way.getId()))));
+            }
+
+            return batchRecords(mapId, records, currentWays, predicateList, RecordBatchType.UPDATE, maxRecordBatchSize);
+        }
+        else { //recordBatchType == RecordBatchType.DELETE
+            List<List<BooleanExpression>> predicateList = new LinkedList<>();
+            for (Object o : records) {
+                CurrentWays way = (CurrentWays) o;
+                predicateList.add(Collections.singletonList(Expressions.asBoolean(currentWays.id.eq(way.getId()))));
+            }
+
+            return batchRecords(mapId, records, currentWays, predicateList, RecordBatchType.DELETE, maxRecordBatchSize);
+        }
+    }
+
+    private static long batchRecordsDirectNodes(long mapId, List<?> records, RecordBatchType recordBatchType,
+            int maxRecordBatchSize) {
+
+        if (recordBatchType == RecordBatchType.INSERT) {
+            return batchRecords(mapId, records, currentNodes, null, RecordBatchType.INSERT, maxRecordBatchSize);
+        }
+        else if (recordBatchType == RecordBatchType.UPDATE) {
+            List<List<BooleanExpression>> predicateList = new LinkedList<>();
+            for (Object o : records) {
+                CurrentNodes node = (CurrentNodes) o;
+                predicateList.add(Collections.singletonList(Expressions.asBoolean(currentNodes.id.eq(node.getId()))));
+            }
+
+            return batchRecords(mapId, records, currentNodes, predicateList, RecordBatchType.UPDATE, maxRecordBatchSize);
+        }
+        else { //recordBatchType == RecordBatchType.DELETE
+            List<List<BooleanExpression>> predicateList = new LinkedList<>();
+            for (Object o : records) {
+                CurrentNodes node = (CurrentNodes) o;
+                predicateList.add(Collections.singletonList(Expressions.asBoolean(currentNodes.id.eq(node.getId()))));
+            }
+
+            return batchRecords(mapId, records, currentNodes, predicateList, RecordBatchType.DELETE, maxRecordBatchSize);
+        }
+    }
+
+    private static long batchRecords(long mapId, List<?> records, RelationalPathBase<?> t,
+            List<List<BooleanExpression>> predicateslist, RecordBatchType recordBatchType, int maxRecordBatchSize) {
+        if (recordBatchType == RecordBatchType.INSERT) {
+            SQLInsertClause insert = createQuery(mapId).insert(t);
+            long nBatch = 0;
+            for (int i = 0; i < records.size(); i++) {
+                Object oRec = records.get(i);
+                insert.populate(oRec).addBatch();
+                nBatch++;
+
+                if ((maxRecordBatchSize > -1) && (i > 0)) {
+                    if ((i % maxRecordBatchSize) == 0) {
+                        insert.execute();
+
+                        insert = createQuery(mapId).insert(t);
+                        nBatch = 0;
+                    }
+                }
+            }
+
+            if (nBatch > 0) {
+                return insert.execute();
+            }
+
+            return 0;
+        }
+        else if (recordBatchType == RecordBatchType.UPDATE) {
+            SQLUpdateClause update = createQuery(mapId).update(t);
+            long nBatchUpdate = 0;
+            for (int i = 0; i < records.size(); i++) {
+                Object oRec = records.get(i);
+
+                List<BooleanExpression> predicates = predicateslist.get(i);
+
+                BooleanExpression[] params = new BooleanExpression[predicates.size()];
+
+                for (int j = 0; j < predicates.size(); j++) {
+                    params[j] = predicates.get(j);
+                }
+
+                update.populate(oRec).where((Predicate[]) params).addBatch();
+                nBatchUpdate++;
+
+                if ((maxRecordBatchSize > -1) && (i > 0)) {
+                    if ((i % maxRecordBatchSize) == 0) {
+                        update.execute();
+
+                        update = createQuery(mapId).update(t);
+                        nBatchUpdate = 0;
+                    }
+                }
+            }
+
+            if (nBatchUpdate > 0) {
+                return update.execute();
+            }
+
+            return 0;
+        }
+        else { //(recordBatchType == RecordBatchType.DELETE)
+            SQLDeleteClause delete = createQuery(mapId).delete(t);
+            long nBatchDel = 0;
+            for (int i = 0; i < records.size(); i++) {
+                List<BooleanExpression> predicates = predicateslist.get(i);
+
+                BooleanExpression[] params = new BooleanExpression[predicates.size()];
+
+                for (int j = 0; j < predicates.size(); j++) {
+                    params[j] = predicates.get(j);
+                }
+
+                delete.where((Predicate[]) params).addBatch();
+                nBatchDel++;
+                if ((maxRecordBatchSize > -1) && (i > 0)) {
+                    if ((i % maxRecordBatchSize) == 0) {
+                        delete.execute();
+
+                        delete = createQuery(mapId).delete(t);
+                        nBatchDel = 0;
+                    }
+                }
+            }
+
+            if (nBatchDel > 0) {
+                return delete.execute();
+            }
+
+            return 0;
+        }
     }
 }

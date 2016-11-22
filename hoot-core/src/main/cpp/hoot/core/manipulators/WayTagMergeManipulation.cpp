@@ -30,6 +30,7 @@
 // Hoot
 #include <hoot/core/OsmMap.h>
 #include <hoot/core/elements/Way.h>
+#include <hoot/core/ops/RemoveWayOp.h>
 
 namespace hoot
 {
@@ -40,7 +41,6 @@ WayTagMergeManipulation::WayTagMergeManipulation(long leftId, long rightId,
 {
 }
 
-/// @todo See ticket r2881
 void WayTagMergeManipulation::applyManipulation(shared_ptr<OsmMap> wm,
   set<ElementId>& impactedElements, set<ElementId>& newElements) const
 {
@@ -62,7 +62,7 @@ void WayTagMergeManipulation::applyManipulation(shared_ptr<OsmMap> wm,
   w1->getTags().addTags(w2->getTags());
   w1->setStatus(Status::Conflated);
 
-  wm->removeWay(w2);
+  RemoveWayOp::removeWay(wm, w2->getId());
 }
 
 const set<long>& WayTagMergeManipulation::getImpactedWayIds(shared_ptr<const OsmMap> /*map*/) const

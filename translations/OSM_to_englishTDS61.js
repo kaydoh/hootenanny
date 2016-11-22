@@ -61,6 +61,15 @@ function initialize()
 {
     // Turn off the TDS structure so we just get the raw feature
     hoot.Settings.set({"ogr.tds.structure":"false"});
+
+    // Throw errors instead of returning partial translations/o2s_X features
+    hoot.Settings.set({"ogr.throw.error":"true"});
+
+    // Turn off the ESRI FCSUBTYPE
+    hoot.Settings.set({"ogr.tds.add.fcsubtype":"false"});
+
+    // Set the schema type for the export
+    hoot.Settings.set({"osm.map.writer.schema":"TDSv61"});
 }
 
 
@@ -96,8 +105,3 @@ function translateToOgr(tags, elementType, geometryType)
 {
         return etds61.toEnglish(tags, elementType, geometryType)
 } // End of translateToOgr
-
-
-
-
-

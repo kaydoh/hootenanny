@@ -241,25 +241,31 @@
       },
       {
         "id": "element_cache_size_node",
+        "minvalue": "0",
         "elem_type": "int",
         "description":"Size of the cache used when streaming I/O is used with nodes.",
         "name": "Element Cache Size Node",
+        "maxvalue": "",
         "defaultvalue": "2000000",
         "hoot_key": "element.cache.size.node"
       },
       {
         "id": "element_cache_size_relation",
+        "minvalue": "0",
         "elem_type": "int",
         "description":"Size of the cache used when streaming I/O is used with relations.",
         "name": "Element Cache Size Relation",
+        "maxvalue": "",        
         "defaultvalue": "200000",
         "hoot_key": "element.cache.size.relation"
       },
       {
         "id": "element_cache_size_way",
+        "minvalue": "0",
         "elem_type": "int",
         "description":"Size of the cache used when streaming I/O is used with ways.",
         "name": "Element Cache Size Way",
+        "maxvalue": "",        
         "defaultvalue": "200000",
         "hoot_key": "element.cache.size.way"
       }
@@ -438,7 +444,7 @@
    			"override":{"defaultvalue":"hoot::BuildingMergerCreator"},
         "hoot_key": "merger.creators",
 				"required":"true"
-      },
+      }
     ]
   },
   {
@@ -491,37 +497,6 @@
 											},
 								"hoot_key": "merger.creators"
 							}
-						]
-					},
-					{
-						"id": "hoot_poi_opt_places",
-						"description": "Places options",
-						"name": "Places",
-						"members":[
-							  {
-									"id": "poi_match_creator_places",
-									"elem_type": "string",
-									"description": "List of MatchCreators to use during conflation. This can modify what features will be conflated (e.g. buildings, roads, etc.).",
-									"name": "POI Places Match Creator",
-									"required": "true",
-									"defaultvalue": "hoot::PlacesPoiMatchCreator",
-									"override":{
-													"defaultvalue": "hoot::PlacesPoiMatchCreator"
-												},
-									"hoot_key": "match.creators"
-							  },
-							  {
-									"id": "poi_merger_creator_places",
-									"elem_type": "string",
-									"description": "List of MergerCreators to use during conflation. This can modify what features will be conflated (e.g. buildings, roads, etc.).",
-									"name": "POI Places Merger Creator",
-									"required": "true",
-									"defaultvalue": "hoot::PlacesPoiMergerCreator",
-									"override":{
-													"defaultvalue": "hoot::PlacesPoiMergerCreator"
-												},
-									"hoot_key": "merger.creators"
-							  }
 						]
 					}			 
 				]

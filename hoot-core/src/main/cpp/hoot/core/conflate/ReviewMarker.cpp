@@ -27,6 +27,7 @@
 #include "ReviewMarker.h"
 
 #include <hoot/core/util/Log.h>
+#include <hoot/core/ops/RemoveElementOp.h>
 
 // Tgs
 #include <tgs/RStarTree/HilbertCurve.h>
@@ -43,6 +44,7 @@ QString ReviewMarker::_reviewNeedsKey = "hoot:review:needs";
 QString ReviewMarker::_reviewNoteKey = "hoot:review:note";
 QString ReviewMarker::_reviewTypeKey = "hoot:review:type";
 QString ReviewMarker::_reviewChoicesKey = "hoot:review:choices";
+QString ReviewMarker::reviewMemberCountKey = "hoot:review:members";
 
 
 ReviewMarker::ReviewMarker()
@@ -93,6 +95,23 @@ QString ReviewMarker::getReviewType(const ConstOsmMapPtr &map, ReviewUid uid)
   ConstRelationPtr r = map->getRelation(uid.getId());
 
   return r->getTags()[_reviewTypeKey];
+}
+
+set<ReviewMarker::ReviewUid> ReviewMarker::getReviewUids(const ConstOsmMapPtr &map)
+{
+  set<ElementId> result;
+
+  const RelationMap& relations = map->getRelationMap();
+  for (RelationMap::const_iterator it = relations.begin(); it != relations.end(); ++it)
+  {
+    shared_ptr<Relation> relation = it->second;
+    if (relation->getElementType() == ElementType::Relation || relation->getType() == Relation::REVIEW)
+    {
+      result.insert(relation->getElementId());
+    }
+  }
+
+  return result;
 }
 
 set<ReviewMarker::ReviewUid> ReviewMarker::getReviewUids(const ConstOsmMapPtr &map,
@@ -160,7 +179,9 @@ void ReviewMarker::mark(const OsmMapPtr &map, const ElementPtr& e1, const Elemen
   r->getTags().set(_reviewScoreKey, score);
   r->addElement(_revieweeKey, e1->getElementId());
   r->addElement(_revieweeKey, e2->getElementId());
+  r->getTags().set(reviewMemberCountKey, (int)r->getMembers().size());
   r->setCircularError(-1);
+
 
   //LOG_VARD(r->getId());
   //LOG_VARD(e1->getElementId());
@@ -194,6 +215,7 @@ void ReviewMarker::mark(const OsmMapPtr &map, set<ElementId> ids, const QString&
     r->addElement(_revieweeKey, id);
     it++;
   }
+  r->getTags().set(reviewMemberCountKey, (int)r->getMembers().size());
   r->setCircularError(-1);
 
   //LOG_VARD(r->getId());
@@ -223,6 +245,7 @@ void ReviewMarker::mark(const OsmMapPtr& map, const ElementPtr& e, const QString
   r->getTags().appendValueIfUnique(_reviewTypeKey, reviewType);
   r->getTags().set(_reviewScoreKey, score);
   r->addElement(_revieweeKey, e->getElementId());
+  r->getTags().set(reviewMemberCountKey, (int)r->getMembers().size());
   r->setCircularError(-1);
 
   //LOG_VARD(r->getId());
@@ -238,7 +261,7 @@ void ReviewMarker::mark(const OsmMapPtr& map, const ElementPtr& e, const QString
 
 void ReviewMarker::removeElement(const OsmMapPtr& map, ElementId eid)
 {
-  map->removeElement(eid);
+  RemoveElementOp::removeElement(map, eid);
 }
 
 }

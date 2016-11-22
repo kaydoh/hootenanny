@@ -7,11 +7,11 @@ Feature: Manually resolve reviews feature
     And I press "Add Reference Dataset"
     And I click the "AllDataTypesACucumber" Dataset
     And I press "Add Layer"
-    Then I wait 30 "seconds" to see "AllDataTypesACucumber"
+    Then I wait 15 "seconds" to see "span.strong" element with text "AllDataTypesACucumber"
     And I press "Add Secondary Dataset"
     And I click the "AllDataTypesBCucumber" Dataset
     And I press "Add Layer"
-    Then I wait 30 "seconds" to see "AllDataTypesBCucumber"
+    Then I wait 15 "seconds" to see "span.strong" element with text "AllDataTypesBCucumber"
     Then I should see "Conflate"
     And I press "Conflate"
     And I append "saveAs" input with "_Cucumber"
@@ -22,11 +22,12 @@ Feature: Manually resolve reviews feature
     Then I wait 30 "seconds" to see "Reviews remaining: 8 (Resolved: 0)"
     Then I should see "Hide Table"
     Then I should see "name"
-    Then I should see "Previous"
-    Then I should see "Next"
+    Then I should see a "a.previous" on the map
+    Then I should see a "a.next" on the map
     Then I should see "Resolved"
     #Add a new point and edit name tag
     When I click the "add-point" button
+    And I hover over "#map"
     And I click the "map" at "400","100"
     And I click the "div.label" with text "Park"
     And I type "Test Name" in input "preset-input-name"
@@ -35,7 +36,7 @@ Feature: Manually resolve reviews feature
         | leisure | park |
         | name | Test Name |
     #Edit a review feature
-    When I select a node map feature with id "activeReviewFeature"
+    When I select a node map feature with class "activeReviewFeature"
     And I type "Edit Name" in input "preset-input-name"
     Then I wait 2 "seconds" to see "div.tag-table td.f1" element with text "Edit Name"
 
@@ -50,8 +51,59 @@ Feature: Manually resolve reviews feature
     Then I wait 30 "seconds" to see "Reviews remaining: 7 (Resolved: 1)"
     And I press "Resolved"
     Then I wait 30 "seconds" to see "Reviews remaining: 6 (Resolved: 2)"
+    #Click the review item box
+    And I hover over "#map"
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    When I click the review item column in the tag table
+    Then I should see "Edit feature: "
+    And I click on "a.next"
+    And I hover over "#map"
+    Then I should not see "Edit feature: "
+    #Click the review against item box
+    #Click random feature
     And I press "Resolved"
     Then I wait 30 "seconds" to see "Reviews remaining: 5 (Resolved: 3)"
+    Then I wait 5 seconds to see "g.activeReviewFeature" on the map
+    Then I should see a "g.activeReviewFeature2" on the map
     And I press "Resolved"
     Then I wait 30 "seconds" to see "Reviews remaining: 4 (Resolved: 4)"
     And I press "Resolved"
@@ -62,15 +114,15 @@ Feature: Manually resolve reviews feature
     Then I wait 30 "seconds" to see "Reviews remaining: 1 (Resolved: 7)"
     And I press "Merge"
     Then I wait 30 "seconds" to not see "Please wait while merging review items."
-    And I press "Next"
+    And I click on "a.next"
     Then I wait 5 "seconds" to see "Please resolve or undo the current feature changes before proceeding to the next review."
-    And I press "Previous"
+    And I click on "a.previous"
     Then I wait 5 "seconds" to see "Please resolve or undo the current feature changes before proceeding to the next review."
     And I press "Resolved"
     Then I wait 30 "seconds" to see "There are no more available features to review."
     Then I should not see "Reviews remaining:"
     Then I should not see "Hide Table"
     Then I should not see "name"
-    Then I should not see "Previous"
-    Then I should not see "Next"
+    Then I should not see "a.previous"
+    Then I should not see "a.next"
     Then I should not see "Resolved"

@@ -199,7 +199,7 @@ translate = {
                         continue;
                     }
 
-                    logVerbose('Lookup value not found for column:: (' + col + '=' + value + ')');
+                    hoot.logVerbose('Lookup value not found for column:: (' + col + '=' + value + ')');
                 }
             } // End col in lookup
             else
@@ -237,7 +237,7 @@ translate = {
                 }
                 else
                 {
-                    if (config.getOgrDebugLookupcolumn() == 'true') logVerbose('Column not found:: (' + col + '=' + value + ')');
+                    if (config.getOgrDebugLookupcolumn() == 'true') hoot.logVerbose('Column not found:: (' + col + '=' + value + ')');
                 }
             } // End !col in lookup
         } // End for col in inList
@@ -340,7 +340,7 @@ translate = {
                         continue;
                     }
                         
-                    logVerbose('Lookup value not found for column:: (' + tAttrib + '=' + value + ')');
+                    hoot.logVerbose('Lookup value not found for column:: (' + tAttrib + '=' + value + ')');
 
                     // The following is used for export. If we have an attribute value that can't
                     // find a rule for, we add it to the OTH Field.
@@ -352,7 +352,7 @@ translate = {
                         othVal = '(' + otherVal[0] + endChar + ':' + value + ')';
                         outList.OTH = translate.appendValue(outList.OTH,othVal,' ');
 
-                        logVerbose('Adding to OTH field:: ' + othVal);
+                        hoot.logVerbose('Adding to OTH field:: ' + othVal);
 
                         // Set the output attribute to "other"
                         outList[otherVal[0] + endChar] = otherVal[1];
@@ -364,7 +364,7 @@ translate = {
                     } // End if otherVal
                     else
                     {
-                        logVerbose('Could not add ::' + tAttrib + '=' + value + ':: to the OTH field');
+                        hoot.logVerbose('Could not add ::' + tAttrib + '=' + value + ':: to the OTH field');
                     }
                 } // End value != ''
             } // End tAttrib in lookup
@@ -379,7 +379,7 @@ translate = {
                 }
                 else
                 {
-                    if (config.getOgrDebugLookupcolumn() == 'true') logVerbose('Column not found:: (' + col + '=' + value + ')');
+                    if (config.getOgrDebugLookupcolumn() == 'true') hoot.logVerbose('Column not found:: (' + col + '=' + value + ')');
                 }
             } // End !col in lookup
         } // End for col in inList
@@ -480,7 +480,7 @@ translate = {
             }
             else
             {
-                logVerbose('OTH:: Attribute :' + i + ': is supposed to be 999/Other. It is not set. Skipping it.');
+                hoot.logVerbose('OTH:: Attribute :' + i + ': is supposed to be 999/Other. It is not set. Skipping it.');
                 continue
             } // End !attrsi[]
 
@@ -490,7 +490,7 @@ translate = {
 
             if (tValue !== '999')
             {
-                logVerbose('OTH:: Attribute :' + i + ': is supposed to be 999/Other. It is :' + tValue + ':. Skipping it.');
+                hoot.logVerbose('OTH:: Attribute :' + i + ': is supposed to be 999/Other. It is :' + tValue + ':. Skipping it.');
                 continue;
             }
 
@@ -564,7 +564,11 @@ translate = {
             if (eIndex > -1)
             {
                 tgs = rawMemo.slice(sIndex + 5, eIndex);
-                txt = rawMemo.substring(0,sIndex) + rawMemo.substring(eIndex + 6);
+
+                if (sIndex > 0)
+                {
+                    txt = rawMemo.substring(0,sIndex) + rawMemo.substring(eIndex + 6);
+                }
 
                 // If the </OSM> tag was at the end, remove the ';' delimiter from the text
                 if (txt.charAt(txt.length - 1) == ';') txt = txt.slice(0,-1);
@@ -573,6 +577,10 @@ translate = {
             {
                 hoot.logWarn('Missing OSM end tag in: ' + rawMemo);
             }
+        }
+        else
+        {
+            txt = rawMemo;
         }
 
         return {tags:tgs,text:txt};
@@ -751,7 +759,7 @@ translate = {
                     }
                     else
                     {
-                        logVerbose('Expected a number for:: ' + i + '. Got ' + attrs[i] + ' instead. Skipping ' + i);
+                        hoot.logVerbose('Expected a number for:: ' + i + '. Got ' + attrs[i] + ' instead. Skipping ' + i);
                     }
                 }
             }
@@ -789,7 +797,7 @@ translate = {
                     }
                     else
                     {
-                        logVerbose('Expected a number for:: ' + rules[i] + '. Got ' + tags[rules[i]] + ' instead. Skipping ' + i);
+                        hoot.logVerbose('Expected a number for:: ' + rules[i] + '. Got ' + tags[rules[i]] + ' instead. Skipping ' + i);
                     }
                 }
             }

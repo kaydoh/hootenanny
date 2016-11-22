@@ -29,7 +29,7 @@ if [ ! -f /etc/apt/sources.list.d/pgdg.list ]; then
 fi
 
 echo "### Installing dependencies from repos..."
-sudo apt-get -q -y install texinfo g++ libicu-dev libqt4-dev git-core libboost-dev libcppunit-dev libcv-dev libopencv-dev libgdal-dev liblog4cxx10-dev libnewmat10-dev libproj-dev python-dev libjson-spirit-dev automake protobuf-compiler libprotobuf-dev gdb libqt4-sql-psql libgeos++-dev swig lcov tomcat6 openjdk-7-jdk openjdk-7-dbg maven libstxxl-dev nodejs-dev nodejs-legacy doxygen xsltproc asciidoc pgadmin3 curl npm libxerces-c28 libglpk-dev libboost-all-dev source-highlight texlive-lang-arabic texlive-lang-hebrew texlive-lang-cyrillic graphviz w3m python-setuptools python python-pip git ccache libogdi3.2-dev gnuplot python-matplotlib libqt4-sql-sqlite ruby ruby-dev xvfb zlib1g-dev patch x11vnc openssh-server htop unzip postgresql-9.5  postgresql-client-9.5 postgresql-9.5-postgis-scripts postgresql-9.5-postgis-2.2 >> Ubuntu_upgrade.txt 2>&1
+sudo apt-get -q -y install texinfo g++ libicu-dev libqt4-dev git-core libboost-dev libcppunit-dev libcv-dev libopencv-dev libgdal-dev liblog4cxx10-dev libnewmat10-dev libproj-dev python-dev libjson-spirit-dev automake protobuf-compiler libprotobuf-dev gdb libqt4-sql-psql libgeos++-dev swig lcov tomcat6 openjdk-7-jdk openjdk-7-dbg maven libstxxl-dev nodejs-dev nodejs-legacy doxygen xsltproc asciidoc pgadmin3 curl npm libxerces-c28 libglpk-dev libboost-all-dev source-highlight texlive-lang-arabic texlive-lang-hebrew texlive-lang-cyrillic graphviz w3m python-setuptools python python-pip git ccache libogdi3.2-dev gnuplot python-matplotlib libqt4-sql-sqlite ruby ruby-dev xvfb zlib1g-dev patch x11vnc openssh-server htop unzip postgresql-9.5  postgresql-client-9.5 postgresql-9.5-postgis-scripts postgresql-9.5-postgis-2.3 >> Ubuntu_upgrade.txt 2>&1
 
 if ! dpkg -l | grep --quiet dictionaries-common; then
     # See /usr/share/doc/dictionaries-common/README.problems for details
@@ -97,13 +97,13 @@ echo "### Installing cucumber gems..."
 gem list --local | grep -q mime-types
 if [ $? -eq 1 ]; then
    #sudo gem install mime-types -v 2.6.2
-   gem install mime-types 
+   gem install mime-types
 fi
-gem list --local | grep -q capybara
-if [ $? -eq 1 ]; then
-   #sudo gem install capybara -v 2.5.0
-   gem install capybara
-fi
+# gem list --local | grep -q capybara
+# if [ $? -eq 1 ]; then
+#    #sudo gem install capybara -v 2.5.0
+#    gem install capybara
+# fi
 gem list --local | grep -q cucumber
 if [ $? -eq 1 ]; then
    #sudo gem install cucumber
@@ -151,9 +151,19 @@ if [ ! -f bin/chromedriver ]; then
     echo "### Installing Chromedriver..."
     mkdir -p $HOME/bin
     if [ ! -f chromedriver_linux64.zip ]; then
-      wget --quiet http://chromedriver.storage.googleapis.com/2.14/chromedriver_linux64.zip
+      LATEST_RELEASE="`wget --quiet -O- http://chromedriver.storage.googleapis.com/LATEST_RELEASE`"
+      wget --quiet http://chromedriver.storage.googleapis.com/$LATEST_RELEASE/chromedriver_linux64.zip
     fi
     unzip -d $HOME/bin chromedriver_linux64.zip
+else
+  LATEST_RELEASE="`wget --quiet -O- http://chromedriver.storage.googleapis.com/LATEST_RELEASE`"
+  if [[ "$(chromedriver --version)" != "ChromeDriver $(LATEST_RELEASE).*" ]]; then
+    echo "### Updating Chromedriver"
+    rm $HOME/bin/chromedriver
+    rm $HOME/chromedriver_linux64.zip
+    wget --quiet http://chromedriver.storage.googleapis.com/$LATEST_RELEASE/chromedriver_linux64.zip
+    unzip -o -d $HOME/bin chromedriver_linux64.zip
+  fi
 fi
 
 sudo apt-get autoremove -y
@@ -335,7 +345,7 @@ if grep -i --quiet 'gdal/1.10' /etc/default/tomcat6; then
 fi
 
 # Remove gdal libs installed by libgdal-dev that interfere with
-# renderdb-export-server using gdal libs compiled from source (fgdb support)
+# node-export-server using gdal libs compiled from source (fgdb support)
 if [ -f "/usr/lib/libgdal.*" ]; then
     echo "Removing GDAL libs installed by libgdal-dev..."
     sudo rm /usr/lib/libgdal.*
@@ -536,6 +546,15 @@ sudo cp $HOOT_HOME/node-mapnik-server/init.d/node-mapnik-server /etc/init.d
 sudo chmod a+x /etc/init.d/node-mapnik-server
 # Make sure all npm modules are installed
 cd $HOOT_HOME/node-mapnik-server
+npm install --silent
+# Clean up after the npm install
+rm -rf $HOME/tmp
+
+echo "### Installing node-export-server..."
+sudo cp $HOOT_HOME/node-export-server/init.d/node-export-server /etc/init.d
+sudo chmod a+x /etc/init.d/node-export-server
+# Make sure all npm modules are installed
+cd $HOOT_HOME/node-export-server
 npm install --silent
 # Clean up after the npm install
 rm -rf $HOME/tmp

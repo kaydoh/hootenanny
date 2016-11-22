@@ -22,14 +22,13 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 package hoot.services.controllers.job.custom.hgis;
 
 import static hoot.services.HootProperties.HGIS_PREPARE_FOR_VALIDATION_SCRIPT;
+import static hoot.services.models.db.QMaps.maps;
 
-import java.sql.Connection;
-import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -47,17 +46,24 @@ import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Controller;
+import org.springframework.transaction.annotation.Transactional;
 
-import hoot.services.utils.DbUtils;
-import hoot.services.db2.QMaps;
-import hoot.services.exceptions.osm.InvalidResourceParamException;
-import hoot.services.job.JobStatusManager;
+import hoot.services.controllers.job.JobStatusManager;
 import hoot.services.models.osm.ModelDaoUtils;
+import hoot.services.utils.DbUtils;
 
 
+@Controller
 @Path("/review/custom/HGIS")
+@Transactional
 public class HGISReviewResource extends HGISResource {
     private static final Logger logger = LoggerFactory.getLogger(HGISReviewResource.class);
+
+    @Autowired
+    private JobStatusManager jobStatusManager;
+
 
     public HGISReviewResource() {
         super(HGIS_PREPARE_FOR_VALIDATION_SCRIPT);
@@ -82,25 +88,29 @@ public class HGISReviewResource extends HGISResource {
     @Produces(MediaType.APPLICATION_JSON)
     public PrepareForValidationResponse prepareItemsForValidationReview(PrepareForValidationRequest request) {
         PrepareForValidationResponse res = new PrepareForValidationResponse();
+
+        String src = request.getSourceMap();
+        String output = request.getOutputMap();
+
+        if (src == null) {
+            String msg = "Invalid or empty sourceMap.";
+            throw new WebApplicationException(Response.status(Status.BAD_REQUEST).entity(msg).build());
+        }
+
+        if (output == null) {
+            String msg = "Invalid or empty outputMap.";
+            throw new WebApplicationException(Response.status(Status.BAD_REQUEST).entity(msg).build());
+        }
+
+        if (!mapExists(src)) {
+            String msg = "sourceMap does not exist.";
+            throw new WebApplicationException(Response.status(Status.BAD_REQUEST).entity(msg).build());
+        }
+
         try {
-            String src = request.getSourceMap();
-            String output = request.getOutputMap();
-
-            if (src == null) {
-                throw new InvalidResourceParamException("Invalid or empty sourceMap.");
-            }
-
-            if (output == null) {
-                throw new InvalidResourceParamException("Invalid or empty outputMap.");
-            }
-
-            if (!mapExists(src)) {
-                throw new InvalidResourceParamException("sourceMap does not exist.");
-            }
-
             String jobId = UUID.randomUUID().toString();
-            JSONObject validationCommand = _createBashPostBody(createParamObj(src, output));
 
+            JSONObject validationCommand = _createBashPostBody(createParamObj(src, output));
             JSONObject updateMapTagCommand = createUpdateMapTagCommand(output);
 
             // with new relation based review process we will no longer need to run prepare review
@@ -109,17 +119,13 @@ public class HGISReviewResource extends HGISResource {
             jobArgs.add(validationCommand);
             jobArgs.add(updateMapTagCommand);
 
-            postChainJobRquest(jobId, jobArgs.toJSONString());
+            postChainJobRequest(jobId, jobArgs.toJSONString());
 
             res.setJobId(jobId);
         }
-        catch (InvalidResourceParamException ex) {
-            String msg = ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.BAD_REQUEST).entity(msg).build());
-        }
         catch (Exception ex) {
             String msg = ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+            throw new WebApplicationException(ex, Response.serverError().entity(msg).build());
         }
 
         return res;
@@ -134,45 +140,38 @@ public class HGISReviewResource extends HGISResource {
         param.put("isprimitivetype", "false");
         reviewArgs.add(param);
 
-        return createReflectionJobReq(reviewArgs, "hoot.services.controllers.job.custom.hgis.HGISReviewResource",
-                "updateMapsTag");
+        return createReflectionJobReq(reviewArgs, HGISReviewResource.class.getName(), "updateMapsTag");
     }
 
     // Warning: do not remove this method even though it will appear as unused in your IDE of choice.
     // The method is invoked reflectively
-    public String updateMapsTag(String mapName) throws Exception {
+    public String updateMapsTag(String mapName) {
         String jobId = UUID.randomUUID().toString();
-        try (Connection conn = DbUtils.createConnection()) {
-            JobStatusManager jobStatusManager = null;
-            try {
-                jobStatusManager = new JobStatusManager(conn);
-                jobStatusManager.addJob(jobId);
+        try {
+            jobStatusManager.addJob(jobId);
 
-                QMaps maps = QMaps.maps;
-                long mapId = ModelDaoUtils.getRecordIdForInputString(mapName, conn, maps, maps.id, maps.displayName);
+            long mapId = ModelDaoUtils.getRecordIdForInputString(mapName, maps, maps.id, maps.displayName);
 
-                updateMapTagWithReviewType(conn, mapId);
-                jobStatusManager.setComplete(jobId);
-            }
-            catch (Exception e) {
-                jobStatusManager.setFailed(jobId);
-                logger.error(e.getMessage(), e);
-                throw e;
-            }
+            updateMapTagWithReviewType(mapId);
+
+            jobStatusManager.setComplete(jobId);
+        }
+        catch (ReviewMapTagUpdateException e) {
+            jobStatusManager.setFailed(jobId);
+            throw new RuntimeException("Error updating map " + mapName + "'s tags!", e);
         }
 
         return jobId;
     }
 
-    private static void updateMapTagWithReviewType(Connection connection, long mapId)
-            throws SQLException, ReviewMapTagUpdateException {
+    private static void updateMapTagWithReviewType(long mapId) throws ReviewMapTagUpdateException {
         Map<String, String> tags = new HashMap<>();
         tags.put("reviewtype", "hgisvalidation");
 
-        long resCnt = DbUtils.updateMapsTableTags(tags, mapId, connection);
+        long count = DbUtils.updateMapsTableTags(tags, mapId);
 
-        if (resCnt < 1) {
-            throw new ReviewMapTagUpdateException("Failed to update maps table for mapid:" + mapId);
+        if (count < 1) {
+            throw new ReviewMapTagUpdateException("Failed to update maps table for mapid = " + mapId);
         }
     }
 }

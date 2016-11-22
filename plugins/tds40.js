@@ -36,8 +36,8 @@
 tds = {
     // getDbSchema - Load the standard schema or modify it into the TDS structure.
     getDbSchema: function() {
-        layerNameLookup = {}; // <GLOBAL> Lookup table for converting an FCODE to a layername
-        nfddAttrLookup = {}; // <GLOBAL> Lookup table for checking what attrs are in an FCODE
+        tds.layerNameLookup = {}; // <GLOBAL> Lookup table for converting an FCODE to a layername
+        tds.nfddAttrLookup = {}; // <GLOBAL> Lookup table for checking what attrs are in an FCODE
 
         // Warning: This is <GLOBAL> so we can get access to it from other functions
         tds.rawSchema = tds.schema.getDbSchema();
@@ -72,18 +72,18 @@ tds = {
      */
 
         // Build the NFDD fcode/attrs lookup table. Note: This is <GLOBAL>
-        nfddAttrLookup = translate.makeAttrLookup(tds.rawSchema);
+        tds.nfddAttrLookup = translate.makeAttrLookup(tds.rawSchema);
 
-        // Debugging:
-        // print("nfddAttrLookup");
-        // translate.dumpLookup(nfddAttrLookup);
+        // Debug
+        // print("tds.nfddAttrLookup");
+        // translate.dumpLookup(tds.nfddAttrLookup);
 
         // Decide if we are going to use TDS structure or 1 FCODE / File
         // if we DON't want the new structure, just return the tds.rawSchema
         if (config.getOgrTdsStructure() == 'false')
         {
             // Now build the FCODE/layername lookup table. Note: This is <GLOBAL>
-            layerNameLookup = translate.makeLayerNameLookup(tds.rawSchema);
+            tds.layerNameLookup = translate.makeLayerNameLookup(tds.rawSchema);
 
             // Now add an o2s[A,L,P] feature to the tds.rawSchema
             // We can drop features but this is a nice way to see what we would drop
@@ -235,12 +235,12 @@ tds = {
     }, // End getDbSchema
 
     // validateAttrs: Clean up the supplied attr list by dropping anything that should not be part of the
-    //                feature, checking enumerated values and populateing the OTH field.
+    //                feature, checking enumerated values and populating the OTH field.
     validateAttrs: function(geometryType,attrs) {
 
         // First, use the lookup table to quickly drop all attributes that are not part of the feature.
         // This is quicker than going through the Schema due to the way the Schema is arranged
-        var attrList = nfddAttrLookup[geometryType.toString().charAt(0) + attrs.F_CODE];
+        var attrList = tds.nfddAttrLookup[geometryType.toString().charAt(0) + attrs.F_CODE];
 
         var othList = {};
 
@@ -289,7 +289,7 @@ tds = {
                             {
                                 // Still too long. Chop to the maximum length.
                                 attrs[val] = tStr[0].substring(0,tds.rules.txtLength[val]);
-                                hoot.logWarn('Validate: Attribute ' + val + ' is ' + attrs[val].length + ' long. Truncateing to ' + tds.rules.txtLength[val] + ' characters.');
+                                hoot.logWarn('Validate: Attribute ' + val + ' is ' + attrs[val].length + ' long. Truncating to ' + tds.rules.txtLength[val] + ' characters.');
                             }
                         } // End text attr length > max length
                         // It's text fo skip the next test
@@ -331,7 +331,7 @@ tds = {
                             {
                                 // Still too long. Chop to the maximum length.
                                 attrs[val] = tStr[0].substring(0,tds.rules.txtLength[val]);
-                                hoot.logWarn('Validate: Attribute ' + val + ' is ' + attrs[val].length + ' long. Truncateing to ' + tds.rules.txtLength[val] + ' characters.');
+                                hoot.logWarn('Validate: Attribute ' + val + ' is ' + attrs[val].length + ' long. Truncating to ' + tds.rules.txtLength[val] + ' characters.');
                             }
                         } // End text attr length > max length
                         // It's text fo skip the next test
@@ -419,7 +419,7 @@ tds = {
     validateTDSAttrs: function(gFcode, attrs) {
 
         var tdsAttrList = tdsAttrLookup[tds.rules.thematicGroupList[gFcode]];
-        var nfddAttrList = nfddAttrLookup[gFcode];
+        var nfddAttrList = tds.nfddAttrLookup[gFcode];
 
         for (var i = 0, len = tdsAttrList.length; i < len; i++)
         {
@@ -539,6 +539,9 @@ tds = {
     // ##### Start of the xxToOsmxx Block #####
     applyToOsmPreProcessing: function(attrs, layerName, geometryType)
     {
+        // Drop the FCSUBTYPE since we don't use it
+        if (attrs.FCSUBTYPE) delete attrs.FCSUBTYPE;
+
         // The What Were They Thinking? swap list.  Each of these is the _same_ attribute
         // but renamed in different features. Some of these were done during the move from TDSv30 to
         // TDSv40.  We swap these so that there is only one set of rules needed in the One2One section.
@@ -631,9 +634,6 @@ tds = {
             }
         } // End in attrs loop
 
-        // Drop the FCSUBTYPE since we don't use it
-        if (attrs.FCSUBTYPE) delete attrs.FCSUBTYPE;
-
         // Drop all of the XXX Closure default values IFF the associated attributes are
         // not set.
         // Doing this after the main cleaning loop so all of the -999999 values are
@@ -662,7 +662,8 @@ tds = {
 
         if (attrs.F_CODE)
         {
-            // Nothing to do :-)
+            // Drop the the "Not Found" F_CODE. This is from the UI
+            if (attrs.F_CODE == 'Not found') delete attrs.F_CODE;
         }
         else if (attrs.FCODE)
         {
@@ -814,7 +815,7 @@ tds = {
        } // End if AP030
 
         // Add the LayerName to the source
-        tags.source = 'tdsv40:' + layerName.toLowerCase();
+        if ((! tags.source) && layerName !== '') tags.source = 'tdsv40:' + layerName.toLowerCase();
 
         // If we have a UFI, store it. Some of the MAAX data has a LINK_ID instead of a UFI
         if (tags.uuid)
@@ -960,25 +961,58 @@ tds = {
         */
         }
 
-      // Should be disabled until polygons are fixed....
-        translate.fixConstruction(tags, 'highway');
-        translate.fixConstruction(tags, 'railway');
+        // Fix up landuse tags
+        if (attrs.FCODE == 'AL020')
+        {
+            switch (tags.use) // Fixup the landuse tags
+            {
+                case undefined: // Break early if no value
+                    break;
+
+                case 'commercial':
+                    tags.landuse = 'commercial';
+                    delete tags.use;
+                    break;
+
+                case 'industrial':
+                    tags.landuse = 'industrial';
+                    delete tags.use;
+                    break;
+
+                case 'residential':
+                    tags.landuse = 'residential';
+                    delete tags.use;
+                    break;
+            } // End switch
+        }
+
+        // Lifecycle tags
+        // NOTE: This needs to be expanded.
+        if (tags.condition)
+        {
+            if (tags.condition == 'construction')
+            {
+//                 if (tags.highway && attrs.F_CODE == 'AP030')
+                if (tags.highway)
+                {
+                    tags.construction = tags.highway;
+                    tags.highway = 'construction';
+                    delete tags.condition;
+                }
+                else if (tags.railway)
+                {
+                    tags.construction = tags.railway;
+                    tags.railway = 'construction';
+                    delete tags.condition;
+                }
+            } // End Construction
+
+        } // End Condition tags
 
         // Add defaults for common features
         if (attrs.F_CODE == 'AP020' && !(tags.junction)) tags.junction = 'yes';
         if (attrs.F_CODE == 'AQ040' && !(tags.bridge)) tags.bridge = 'yes';
         if (attrs.F_CODE == 'BH140' && !(tags.waterway)) tags.waterway = 'river';
-
-    /*
-        // Fix up the "works" tags
-        if (tags.works)
-        {
-           // print('## Works = ' + tags.works);
-           tags.man_made = 'works';
-           tags.product = tags.works;
-           delete tags.works
-        }
-     */
 
         // Denominations without religions - from ZI037_REL which has some denominations as religions
         if (tags.denomination)
@@ -1010,7 +1044,7 @@ tds = {
         if (attrs.F_CODE == 'BH070' && !(tags.highway)) tags.highway = 'road';
         if ('ford' in tags && !(tags.highway)) tags.highway = 'road';
 
-        // Unpack the TXT field
+        // Unpack the ZI006_MEM field
         if (tags.note)
         {
             var tObj = translate.unpackMemo(tags.note);
@@ -1020,12 +1054,20 @@ tds = {
                 var tTags = JSON.parse(tObj.tags)
                 for (i in tTags)
                 {
-                    print('Memo: Add: ' + i + ' = ' + tTags[i]);
-                    if (tags[tTags[i]]) print('Overwrite:' + i + ' = ' + tTags[i]);
+                    // Debug
+                    // print('Memo: Add: ' + i + ' = ' + tTags[i]);
+                    if (tags[tTags[i]]) hoot.logWarn('Unpacking ZI006_MEM, overwriting ' + i + ' = ' + tags[i] + '  with ' + tTags[i]);
                     tags[i] = tTags[i];
                 }
+            }
 
+            if (tObj.text !== '')
+            {
                 tags.note = tObj.text;
+            }
+            else
+            {
+                delete tags.note;
             }
         } // End unpack tags.note
 
@@ -1061,7 +1103,6 @@ tds = {
     {
         // Remove Hoot assigned tags for the source of the data
         if (tags['source:ingest:datetime']) delete tags['source:ingest:datetime'];
-        if (tags.source) delete tags.source;
         if (tags.area) delete tags.area;
         if (tags['error:circular']) delete tags['error:circular'];
         if (tags['hoot:status']) delete tags['hoot:status'];
@@ -1105,21 +1146,10 @@ tds = {
             ["t.historic == 'castle' && t.building","delete t.building"],
             ["t.historic == 'castle' && t.ruins == 'yes'","t.condition = 'destroyed'; delete t.ruins"],
             ["t.landcover == 'snowfield' || t.landcover == 'ice-field'","a.F_CODE = 'BJ100'"],
-            ["t.landuse == 'allotments'","t.landuse = 'farmland'"],
-            ["t.landuse == 'brownfield'","t.landuse = 'built_up_area'; t.condition = 'destroyed'"],
-            ["t.landuse == 'construction'","t.landuse = 'built_up_area'; t.condition = 'construction'"],
-            ["t.landuse == 'farm'","t.landuse = 'farmland'"],
             ["t.landuse == 'farmland' && t.crop == 'fruit_tree'","t.landuse = 'orchard'"],
-            ["t.landuse == 'farmyard'","t.facility = 'yes'; t.use = 'agriculture'; delete t.landuse"],
-            ["t.landuse == 'grass'","t.natural = 'grassland'; t['grassland:type'] = 'grassland';"],
-            ["t.landuse == 'meadow'","t.natural = 'grassland'; t['grassland:type'] = 'meadow';"],
-            ["t.landuse == 'military'","t.military = 'installation'; delete t.landuse"],
-            ["t.leisure == 'recreation_ground'","t.landuse = 'recreation_ground'; delete t.leisure"],
             ["t.landuse == 'reservoir'","t.water = 'reservoir'; delete t.landuse"],
-            ["t.landuse == 'retail'","t.landuse = 'built_up_area'; t.use = 'commercial'"],
             ["t.landuse == 'scrub'","t.natural = 'scrub'; delete t.landuse"],
-            // ["t.landuse == 'grass'","a.F_CODE = 'EB010'; t['grassland:type'] = 'grassland';"],
-            // ["t.landuse == 'meadow'","a.F_CODE = 'EB010'; t['grassland:type'] = 'meadow';"],
+            ["t.leisure == 'recreation_ground'","t.landuse = 'recreation_ground'; delete t.leisure"],
             ["t.leisure == 'sports_centre'","t.facility = 'yes'; t.use = 'recreation'; delete t.leisure"],
             ["t.leisure == 'stadium' && t.building","delete t.building"],
             ["t.median == 'yes'","t.is_divided = 'yes'"],
@@ -1258,6 +1288,68 @@ tds = {
             }
         }
 
+        // Fix up landuse & AL020
+        switch (tags.landuse)
+        {
+            case undefined: // Break early if no value
+                break;
+
+            case 'brownfield':
+                tags.landuse = 'built_up_area';
+                tags.condition = 'destroyed';
+                break
+
+            case 'commercial':
+            case 'retail':
+                tags.use = 'commercial';
+                tags.landuse = 'built_up_area';
+                break;
+
+            case 'construction':
+                tags.condition = 'construction';
+                tags.landuse = 'built_up_area';
+                break;
+
+            case 'farm':
+            case 'allotments':
+                tags.landuse = 'farmland';
+                break;
+
+            case 'farmyard': // NOTE: This is different to farm.
+                tags.facility = 'yes';
+                tags.use = 'agriculture';
+                delete tags.landuse;
+                break;
+
+            case 'grass':
+                tags.natural = 'grassland';
+                tags['grassland:type'] = 'grassland';
+                delete tags.landuse;
+                break;
+
+            case 'industrial':
+                tags.use = 'industrial';
+                tags.landuse = 'built_up_area';
+                break;
+
+            case 'military':
+                tags.military = 'installation';
+                delete tags.landuse;
+                break;
+
+            case 'meadow':
+                tags.natural = 'grassland';
+                tags['grassland:type'] = 'meadow';
+                delete tags.landuse;
+                break;
+
+            case 'residential':
+                tags.use = 'residential';
+                tags.landuse = 'built_up_area';
+                break;
+
+        } // End switch landuse
+
         // Places, localities and regions
         if (tags.place)
         {
@@ -1349,6 +1441,7 @@ tds = {
                     {
                         var row = tds.fcodeLookup[col][value];
                         attrs.F_CODE = row[1];
+                        // Debug
                         // print('FCODE: Got ' + attrs.F_CODE);
                     }
                 }
@@ -1580,7 +1673,7 @@ tds = {
         // Debug:
         if (config.getOgrDebugDumptags() == 'true')
         {
-            print('In Layername: ' + layerName);
+            print('In Layername: ' + layerName + '  geometryType: ' + geometryType);
             var kList = Object.keys(attrs).sort()
             for (var i = 0, fLen = kList.length; i < fLen; i++) print('In Attrs: ' + kList[i] + ': :' + attrs[kList[i]] + ':');
         }
@@ -1631,6 +1724,7 @@ tds = {
         // isn't used in the translation - this should end up empty.
         // not in v8 yet: // var tTags = Object.assign({},tags);
         var notUsedAttrs = (JSON.parse(JSON.stringify(attrs)));
+        delete notUsedAttrs.F_CODE;
 
         // apply the simple number and text biased rules
         // NOTE: We are not using the intList paramater for applySimpleNumBiased when going to OSM.
@@ -1647,16 +1741,18 @@ tds = {
         // post processing
         tds.applyToOsmPostProcessing(attrs, tags, layerName, geometryType);
 
+        // Debug: Add the FCODE to the tags
+        if (config.getOgrDebugAddfcode() == 'true') tags['raw:debugFcode'] = attrs.F_CODE;
+
         // Debug:
         if (config.getOgrDebugDumptags() == 'true')
         {
+            for (var i in notUsedAttrs) print('NotUsed: ' + i + ': :' + notUsedAttrs[i] + ':');
+
             var kList = Object.keys(tags).sort()
             for (var i = 0, fLen = kList.length; i < fLen; i++) print('Out Tags: ' + kList[i] + ': :' + tags[kList[i]] + ':');
             print('');
         }
-
-        // Debug: Add the FCODE to the tags
-        if (config.getOgrDebugAddfcode() == 'true') tags['raw:debugFcode'] = attrs.F_CODE;
 
         return tags;
     }, // End of toOsm
@@ -1712,7 +1808,6 @@ tds = {
 
             tds.lookup = translate.createBackwardsLookup(tds.rules.one2one);
             // translate.dumpOne2OneLookup(tds.lookup);
-
         }
 
         // Pre Processing
@@ -1754,8 +1849,24 @@ tds = {
         // push the feature to o2s layer
         var gFcode = geometryType.toString().charAt(0) + attrs.F_CODE;
 
-        if (!(nfddAttrLookup[gFcode]))
+        if (!(tds.nfddAttrLookup[gFcode.toUpperCase()]))
         {
+            // For the UI: Throw an error and die if we don't have a valid feature
+            if (config.getOgrThrowError() == 'true')
+            {
+                if (! attrs.F_CODE)
+                {
+                    returnData.push({attrs:{'error':'No Valid Feature Code'}, tableName: ''});
+                    return returnData;
+                }
+                else
+                {
+                    //throw new Error(geometryType.toString() + ' geometry is not valid for F_CODE ' + attrs.F_CODE);
+                    returnData.push({attrs:{'error':geometryType + ' geometry is not valid for ' + attrs.F_CODE + ' in TDSv40'}, tableName: ''});
+                    return returnData;
+                }
+            }
+
             hoot.logVerbose('FCODE and Geometry: ' + gFcode + ' is not in the schema');
 
             tableName = 'o2s_' + geometryType.toString().charAt(0);
@@ -1785,9 +1896,9 @@ tds = {
 
                 // return {attrs:{tag1:str.substring(0,253), tag2:str.substring(253)}, tableName: tableName};
                 attrs = {tag1:str.substring(0,253),
-                         tag2:str.substring(253,506),
-                         tag3:str.substring(506,759),
-                         tag4:str.substring(759,1012)};
+                        tag2:str.substring(253,506),
+                        tag3:str.substring(506,759),
+                        tag4:str.substring(759,1012)};
             }
 
             returnData.push({attrs: attrs, tableName: tableName});
@@ -1801,33 +1912,40 @@ tds = {
             // Debug: Add the first feature
             //returnData.push({attrs: attrs, tableName: ''});
 
-
             // Now go through the features and clean them up.
             var gType = geometryType.toString().charAt(0);
             for (var i = 0, fLen = returnData.length; i < fLen; i++)
             {
-
-                // Validate attrs: remove all that are not supposed to be part of a feature
-                tds.validateAttrs(geometryType,returnData[i]['attrs']);
-
-                // Now set the FCSubtype.
-                // NOTE: If we export to shapefile, GAIT _will_ complain about this
-                if (config.getOgrTdsAddFcsubtype() == 'true')
-                {
-                    returnData[i]['attrs']['FCSUBTYPE'] = tds.rules.subtypeList[returnData[i]['attrs']['F_CODE']];
-                }
-
+                // Make sure that we have a valid FCODE
                 var gFcode = gType + returnData[i]['attrs']['F_CODE'];
-                // If we are using the TDS structre, fill the rest of the unused attrs in the schema
-                if (config.getOgrTdsStructure() == 'true')
+                if (tds.nfddAttrLookup[gFcode.toUpperCase()])
                 {
-                    returnData[i]['tableName'] = tds.rules.thematicGroupList[gFcode];
-                    tds.validateTDSAttrs(gFcode, returnData[i]['attrs']);
+                    // Validate attrs: remove all that are not supposed to be part of a feature
+                    tds.validateAttrs(geometryType,returnData[i]['attrs']);
+
+                    // Now set the FCSubtype.
+                    // NOTE: If we export to shapefile, GAIT _will_ complain about this
+                    if (config.getOgrTdsAddFcsubtype() == 'true')
+                    {
+                        returnData[i]['attrs']['FCSUBTYPE'] = tds.rules.subtypeList[returnData[i]['attrs']['F_CODE']];
+                    }
+
+                    // If we are using the TDS structre, fill the rest of the unused attrs in the schema
+                    if (config.getOgrTdsStructure() == 'true')
+                    {
+                        returnData[i]['tableName'] = tds.rules.thematicGroupList[gFcode];
+                        tds.validateTDSAttrs(gFcode, returnData[i]['attrs']);
+                    }
+                    else
+                    {
+                        returnData[i]['tableName'] = tds.layerNameLookup[gFcode.toUpperCase()];
+                    }
                 }
-                else
-                {
-                    returnData[i]['tableName'] = layerNameLookup[gFcode.toUpperCase()];
-                }
+//                 else
+//                 {
+//                     // Debug
+//                     print('## Skipping: ' + gFcode);
+//                 }
             } // End returnData loop
 
             // If we have unused tags, throw them into the "extra" layer
@@ -1856,7 +1974,6 @@ tds = {
                 var reviewTable = 'review_' + geometryType.toString().charAt(0);
                 returnData.push({attrs: reviewAttrs, tableName: reviewTable});
             } // End ReviewTags
-
         } // End else We have a feature
 
         // Debug:
@@ -1865,7 +1982,6 @@ tds = {
             for (var i = 0, fLen = returnData.length; i < fLen; i++)
             {
                 print('TableName ' + i + ': ' + returnData[i]['tableName'] + '  FCode: ' + returnData[i]['attrs']['F_CODE'] + '  Geom: ' + geometryType);
-                // for (var j in returnData[i]['attrs']) print('Out Attrs:' + j + ': :' + returnData[i]['attrs'][j] + ':');
                 var kList = Object.keys(returnData[i]['attrs']).sort()
                 for (var j = 0, kLen = kList.length; j < kLen; j++) print('Out Attrs:' + kList[j] + ': :' + returnData[i]['attrs'][kList[j]] + ':');
             }

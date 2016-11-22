@@ -100,7 +100,7 @@ public:
       "{\"type\":\"node\",\"id\":1,\"lat\":0,\"lon\":0,\"tags\":{\"uuid\":\"n1\"}},\n"
       "{\"type\":\"relation\",\"id\":-1,\"members\":[\n"
       "{\"type\":\"node\",\"ref\":1,\"role\":\"reviewee\"},\n"
-      "{\"type\":\"node\",\"ref\":2,\"role\":\"reviewee\"}],\"tags\":{\"hoot:review:needs\":\"yes\",\"hoot:review:type\":\"test\",\"hoot:review:score\":\"-1\",\"hoot:review:note\":\"a note\",\"error:circular\":\"15\"}]\n"
+      "{\"type\":\"node\",\"ref\":2,\"role\":\"reviewee\"}],\"tags\":{\"hoot:review:needs\":\"yes\",\"hoot:review:type\":\"test\",\"hoot:review:members\":\"2\",\"hoot:review:score\":\"-1\",\"hoot:review:note\":\"a note\",\"error:circular\":\"15\"}]\n"
       "}\n",
       OsmJsonWriter().toString(map));
   }
@@ -129,17 +129,15 @@ public:
     uut.mark(map, n1, n2, "a note", "test", 0.15);
     uut.mark(map, n1, n2, "a note 2", "test", 0.5);
 
-    //LOG_VARW(TestUtils::toQuotedString(OsmJsonWriter().toString(map)));
-
     HOOT_STR_EQUALS("{\"version\": 0.6,\"generator\": \"Hootenanny\",\"elements\": [\n"
       "{\"type\":\"node\",\"id\":2,\"lat\":0,\"lon\":0,\"tags\":{\"uuid\":\"n2\"}},\n"
       "{\"type\":\"node\",\"id\":1,\"lat\":0,\"lon\":0,\"tags\":{\"uuid\":\"n1\"}},\n"
       "{\"type\":\"relation\",\"id\":-2,\"members\":[\n"
       "{\"type\":\"node\",\"ref\":1,\"role\":\"reviewee\"},\n"
-      "{\"type\":\"node\",\"ref\":2,\"role\":\"reviewee\"}],\"tags\":{\"hoot:review:needs\":\"yes\",\"hoot:review:type\":\"test\",\"hoot:review:score\":\"0.5\",\"hoot:review:note\":\"a note 2\",\"error:circular\":\"15\"},\n"
+      "{\"type\":\"node\",\"ref\":2,\"role\":\"reviewee\"}],\"tags\":{\"hoot:review:needs\":\"yes\",\"hoot:review:type\":\"test\",\"hoot:review:members\":\"2\",\"hoot:review:score\":\"0.5\",\"hoot:review:note\":\"a note 2\",\"error:circular\":\"15\"},\n"
       "{\"type\":\"relation\",\"id\":-1,\"members\":[\n"
       "{\"type\":\"node\",\"ref\":1,\"role\":\"reviewee\"},\n"
-      "{\"type\":\"node\",\"ref\":2,\"role\":\"reviewee\"}],\"tags\":{\"hoot:review:needs\":\"yes\",\"hoot:review:type\":\"test\",\"hoot:review:score\":\"0.15\",\"hoot:review:note\":\"a note\",\"error:circular\":\"15\"}]\n"
+      "{\"type\":\"node\",\"ref\":2,\"role\":\"reviewee\"}],\"tags\":{\"hoot:review:needs\":\"yes\",\"hoot:review:type\":\"test\",\"hoot:review:members\":\"2\",\"hoot:review:score\":\"0.15\",\"hoot:review:note\":\"a note\",\"error:circular\":\"15\"}]\n"
       "}\n",
       OsmJsonWriter().toString(map));
   }

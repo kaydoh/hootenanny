@@ -22,7 +22,7 @@
  * This will properly maintain the copyright information. DigitalGlobe
  * copyrights will be updated automatically.
  *
- * @copyright Copyright (C) 2015, 2016 DigitalGlobe (http://www.digitalglobe.com/)
+ * @copyright Copyright (C) 2016 DigitalGlobe (http://www.digitalglobe.com/)
  */
 package hoot.services.controllers.job.custom.hgis;
 
@@ -41,11 +41,13 @@ import javax.ws.rs.core.Response.Status;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Controller;
+import org.springframework.transaction.annotation.Transactional;
 
-import hoot.services.exceptions.osm.InvalidResourceParamException;
 
-
+@Controller
 @Path("/filter/custom/HGIS")
+@Transactional
 public class HGISFilterResource extends HGISResource {
     private static final Logger logger = LoggerFactory.getLogger(HGISFilterResource.class);
 
@@ -69,36 +71,33 @@ public class HGISFilterResource extends HGISResource {
     @Produces(MediaType.APPLICATION_JSON)
     public FilterNonHgisPoisResponse filterNonHgisPois(FilterNonHgisPoisRequest request) {
         FilterNonHgisPoisResponse resp = new FilterNonHgisPoisResponse();
+        String src = request.getSource();
+        String output = request.getOutput();
+
+        if (src == null) {
+            String msg = "Invalid or empty sourceMap.";
+            throw new WebApplicationException(Response.status(Status.BAD_REQUEST).entity(msg).build());
+        }
+
+        if (output == null) {
+            String msg = "Invalid or empty outputMap.";
+            throw new WebApplicationException(Response.status(Status.BAD_REQUEST).entity(msg).build());
+        }
+
+        if (!mapExists(src)) {
+            String msg = "Map " + src + " does not exist.";
+            throw new WebApplicationException(Response.status(Status.BAD_REQUEST).entity(msg).build());
+        }
 
         try {
-            String src = request.getSource();
-            String output = request.getOutput();
-
-            if (src == null) {
-                throw new InvalidResourceParamException("Invalid or empty sourceMap.");
-            }
-
-            if (output == null) {
-                throw new InvalidResourceParamException("Invalid or empty outputMap.");
-            }
-
-            if (!mapExists(src)) {
-                throw new InvalidResourceParamException("sourceMap does not exist.");
-            }
-
             String jobId = UUID.randomUUID().toString();
             String argStr = createBashPostBody(createParamObj(src, output));
-            postJobRquest(jobId, argStr);
-
+            postJobRequest(jobId, argStr);
             resp.setJobId(jobId);
         }
-        catch (InvalidResourceParamException ex) {
-            String msg = ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.BAD_REQUEST).entity(msg).build());
-        }
-        catch (Exception ex) {
-            String msg = ex.getMessage();
-            throw new WebApplicationException(ex, Response.status(Status.INTERNAL_SERVER_ERROR).entity(msg).build());
+        catch (Exception e) {
+            String msg = "Error while trying to filter non-HGIS POI's.  Cause: " + e.getMessage();
+            throw new WebApplicationException(e, Response.serverError().entity(msg).build());
         }
 
         return resp;
