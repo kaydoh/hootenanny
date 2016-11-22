@@ -102,7 +102,8 @@ def printJavascript(schema,withDefs):
                 print '                       defValue:"%s", ' % (schema[f]['columns'][k]['defValue'])
                 print '                       enumerations:['
                 for l in schema[f]['columns'][k]['enum']:
-                    print '                           { name:"%s", value:"%s" }, ' % (l['name'],l['value'])
+                    #print '                           { name:"%s", value:"%s" }, ' % (l['name'],l['value'])
+                    print '                           { value:"%s", name:"%s" }, ' % (l['value'],l['name'])
                 print '                        ] // End of Enumerations '
 
             else:
@@ -145,9 +146,11 @@ def printFunctions(eList):
         num_vals = len(eList[i]['values'].keys()) # How many values does the thing have?
         for j in sorted(eList[i]['values'].keys(), key=asint):
             if num_vals == 1: # Are we at the last feature? yes = no trailing comma
-                print '              { name:"%s", value:"%s" } ' % (eList[i]['values'][j],j)
+                #print '              { name:"%s", value:"%s" } ' % (eList[i]['values'][j],j)
+                print '              { value:"%s", name:"%s" } ' % (j,eList[i]['values'][j])
             else:
-                print '              { name:"%s", value:"%s" }, ' % (eList[i]['values'][j],j)
+                #print '              { name:"%s", value:"%s" }, ' % (eList[i]['values'][j],j)
+                print '              { value:"%s", name:"%s" }, ' % (j,eList[i]['values'][j])
                 num_vals -= 1
 
         print '             ];'
@@ -223,7 +226,6 @@ def printRules(schema):
                 print "     ['%s','%s','raw:%s','yes']," % (i,j,i)
                 continue
             print "     ['%s','%s','raw:%s','%s'], // %s" % (i,j,i,eVal,rVal)
-
 # End printRules
 
 
@@ -255,6 +257,29 @@ def printFcodeList(schema):
     for i in sorted(tList.keys()):
         print '"%s","%s"' % (i,tList[i])
 # End printFcodeList
+
+
+# Print FCode Attribute List
+def printFcodeAttrList(schema):
+    tList = {}
+    for i in schema:
+        if schema[i]['fcode'] not in tList:
+            tList[schema[i]['fcode']] = []
+            for j in schema[i]['columns']:
+                tList[schema[i]['fcode']].append(schema[i]['columns'][j]['name'])
+
+    #print '"FCODE","Name"'
+    for i in sorted(tList.keys()):
+        print '%s : %s' % (i,tList[i])
+# End printFcodeList
+
+
+# printLayerList
+def printLayerList(layerList):
+    for i in sorted(layerList.keys()):
+        print "'%s':'%s',  // %s" % (i,layerList[i]['layer'],layerList[i]['name'])
+
+# End printLayerList
 
 
 # Print ToEnglish
@@ -379,6 +404,41 @@ def printTxtRules(schema):
 # End printTxtRules
 
 
+# Print Text Attribute Lengths
+# Output format:      'BA000_VDR':80,
+def printTxtLen(schema):
+    tList = {}
+
+    for i in schema:
+        for j in schema[i]['columns']:
+            if schema[i]['columns'][j]['type'] != 'String':
+                continue
+
+            if 'length' in schema[i]['columns'][j]:
+                tList[schema[i]['columns'][j]['name']] = schema[i]['columns'][j]['length']
+
+    for i in sorted(tList.keys()):
+        print "     '%s':%s," % (i,tList[i])
+# End printTxtLen
+
+
+# Print Integer Attributes
+# Output format:      'XXX',
+def printIntAttr(schema):
+    tList = []
+
+    for i in schema:
+        for j in schema[i]['columns']:
+            if schema[i]['columns'][j]['type'] != 'Integer':
+                continue
+
+            if schema[i]['columns'][j]['name'] not in tList:
+                tList.append(schema[i]['columns'][j]['name'])
+
+    for i in sorted(tList):
+        print "     '%s'," % (i)
+# End printIntAttr
+
 # Print Number Rules
 def printNumRules(schema):
     tList = {}
@@ -499,6 +559,37 @@ default_list = {
     'textEnumeration':'noInformation'
 }
 
+
+# Process the Layers file
+#
+# NOTE: This just supports the "compsite" version at the moment
+#
+# Output format:         'PAA010':'IndustryPnt', // Industry
+#
+def processLayers(fileName):
+    csvfile = openFile(fileName, 'rb')
+    reader = csv.reader(csvfile, delimiter=',')
+
+    header = reader.next()
+    # print"Main header: %s\n" % (header)
+
+    tValues = {}
+
+    #FeatureName,FeatureCode,Global,Regional,Local,Specialized,Composite,NumericID,AliasName
+    for (FeatureName,FeatureCode,Global,Regional,Local,Specialized,Composite,NumericID,AliasName) in reader:
+        if FeatureName == '': # Empty feature/line
+            continue
+
+        # Build LFA000 from ADMINISTRATIVE_BOUNDARY_C and FA000
+        nFcode = geo_list[FeatureName[-1]][0] + FeatureCode
+
+        if Composite != '':
+            tValues[nFcode] = {'layer':Composite, 'name':FeatureName}
+
+    return tValues
+# End processLayers
+
+
 # Process the enumerated values file
 def processValues(fileName):
     csvfile = openFile(fileName, 'rb')
@@ -524,13 +615,14 @@ def processValues(fileName):
         # Default: Split the value and store it
         if (fieldValue.find('=') > -1):
             (aValue,aName) = fieldValue.split("=")
-            aName = aName.strip()
+            tName = aName.replace("'","").replace("\"","").strip()
             tValue = aValue.replace("'","").strip()
             tValues[fieldName]['type'] = 'integer'
-            tValues[fieldName]['values'][tValue] = aName
+            tValues[fieldName]['values'][tValue] = tName
         else:
             tValues[fieldName]['type'] = 'text'
-            tValues[fieldName]['values'][fieldValue] = fieldDefinition
+            tDef = fieldDefinition.replace("'","").replace("\"","").strip()
+            tValues[fieldName]['values'][fieldValue] = tDef
 
 
 
@@ -669,12 +761,16 @@ parser = argparse.ArgumentParser(description='Process GGDM files and build a sch
 parser.add_argument('-q','--quiet', help="Don't print warning messages.",action='store_true')
 parser.add_argument('--rules', help='Dump out one2one rules',action='store_true')
 parser.add_argument('--txtrules', help='Dump out text rules',action='store_true')
+parser.add_argument('--txtlen', help='Dump out the lengths of all of the text attributes',action='store_true')
 parser.add_argument('--numrules', help='Dump out number rules',action='store_true')
+parser.add_argument('--intattr', help='Dump out all attributes that are integers',action='store_true')
 parser.add_argument('--attrlist', help='Dump out a list of attributes',action='store_true')
 parser.add_argument('--fcodelist', help='Dump out a list of fcodes',action='store_true')
+parser.add_argument('--fcodeattrlist', help='Dump out a list of FCODE attributes',action='store_true')
 parser.add_argument('--toenglish', help='Dump out To English translation rules',action='store_true')
 parser.add_argument('--fromenglish', help='Dump out From English translation rules',action='store_true')
 parser.add_argument('--attributecsv', help='Dump out attributes as a CSV file',action='store_true')
+parser.add_argument('--layerlist', help='Dump out a list of fcodes and layer names',action='store_true')
 parser.add_argument('--fullschema', help='Dump out a schema with text enumerations',action='store_true')
 parser.add_argument('--withdefs', help='Add feature ad attribute definitions to the schema',action='store_true')
 parser.add_argument('mainfile', help='The main GGDM spec csv file', action='store')
@@ -686,6 +782,14 @@ args = parser.parse_args()
 main_csv_file = args.mainfile
 layer_csv_file = args.layerfile
 values_csv_file = args.valuesfile
+
+
+if args.layerlist:  # Dump out the F_CODES and layer names
+    layerList = {}
+    layerList = processLayers(layer_csv_file)
+    printLayerList(layerList)
+    sys.exit()
+
 
 # Decide if we are going to print the definition for each feature and attribute
 withDefs = False
@@ -711,20 +815,29 @@ schema = processFile(main_csv_file,enumValues)
 
 
 # Now dump the schema, rules etc out
-if args.rules:
+if args.rules:  # One2one Rules
     printRules(schema)
 
-elif args.txtrules:
+elif args.txtrules:  # Text attribute rules
     printTxtRules(schema)
 
-elif args.numrules:
+elif args.txtlen:  # Print all of the lengths of the text attributes
+    printTxtLen(schema)
+
+elif args.numrules:  # Numerical rules
     printNumRules(schema)
 
-elif args.attrlist:
+elif args.intattr:  # Integer attributes
+    printIntAttr(schema)
+
+elif args.attrlist:  # Dump out all of the attribute names and definitions
     printAttrList(schema)
 
-elif args.fcodelist:
+elif args.fcodelist:  # List the FCODES
     printFcodeList(schema)
+
+elif args.fcodeattrlist:
+    printFcodeAttrList(schema)
 
 elif args.toenglish:
     printToEnglish(schema)
@@ -732,7 +845,7 @@ elif args.toenglish:
 elif args.fromenglish:
     printFromEnglish(schema)
 
-elif args.attributecsv:
+elif args.attributecsv:  # Dump the schema as a CSV
     printAttributeCsv(schema)
 
 elif args.fullschema:
